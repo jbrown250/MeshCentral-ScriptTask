@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
+## [0.1.2] - 2026-11-18
+### Added
+- Organise the script list: drag a script or folder onto another item to place it before or after it, or onto a folder to move it in. Toolbar **Move** (pick a folder) and **▲ / ▼** (reorder) do the same without dragging. The order is saved per folder; new scripts go at the end.
+- Folders show nested, and can be collapsed with the arrow or a double-click. Collapsed folders are remembered.
+### Fixed
+- Moving or renaming a folder now updates nested sub-folders and their scripts (previously only direct children).
+- Deleting a folder removes everything inside it, including nested folders, and their schedules and pending jobs.
+- Deleting a script removes its schedules on MongoDB too (string vs ObjectId mismatch).
+- Folder names are no longer matched by prefix (e.g. "Apps" vs "Apps2") when collapsing.
+- "Run" with a folder selected now shows the "select a script" message.
+
 ## [0.1.1] - 2026-11-18
 ### Fixed
 - Removed the agent's check for jobs whose process seemed to have disappeared. It could mark long-running scripts (e.g. backups) as failed with "Script process disappeared before completing" while they were still running. Jobs now stay "Running" until the script actually exits.

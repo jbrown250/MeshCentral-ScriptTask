@@ -71,6 +71,24 @@
     .liselected {
       background-color: lightgray;
     }
+    .lifolder.collapsed {
+      opacity: 0.75;
+    }
+    .lifolder { position: relative; }
+    .lifolder .twisty {
+      position: absolute;
+      left: 2px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 12px;
+      text-align: center;
+      font-size: 9px;
+      color: #555;
+    }
+    .drop-before { box-shadow: inset 0 2px 0 0 #2a6ebb; }
+    .drop-after  { box-shadow: inset 0 -2px 0 0 #2a6ebb; }
+    .drop-into   { background-color: #cfe0f5; outline: 1px dashed #2a6ebb; }
+    .dragging    { opacity: 0.4; }
     #controlBar {
       flex: 0 0 auto;
       width: 100%;
@@ -205,6 +223,9 @@
     <span onclick="goNewFolder();">New Folder</span>
     <span onclick="goDownload();">Download</span>
     <span onclick="goRun();">Run</span>
+    <span onclick="goMoveTo();" title="Move the selected script or folder to another folder">Move</span>
+    <span onclick="goMoveStep(-1);" title="Move up">&#9650;</span>
+    <span onclick="goMoveStep(1);" title="Move down">&#9660;</span>
   </div>
   <div id="scripts_endpoints">
     <div id="scriptContainer">
@@ -381,7 +402,7 @@ function goRun() {
     var selScript = document.querySelectorAll('.liselected');
     if (selScript.length) {
       var scriptId = selScript[0].getAttribute('x-data-id');
-      if (scriptId == selScript[0].getAttribute('x-folder-id'))
+      if (scriptId == selScript[0].getAttribute('x-data-folder'))
       {
           parent.setDialogMode(2, "Oops!", 1, null, 'Please select a script. A folder is currently selected.'); 
       }
@@ -474,44 +495,162 @@ function addScript(name, content, path) {
     parent.setDialogMode(2, "Oops!", 1, null, 'Currently accepted filetypes are .ps1, .bat, and bash scripts.'); 
   }
 }
-function redrawScriptTree() {
-  var lastpath = null;
-  var str = '';
-  var indent = 0;
-  var folder_id = null;
-  str += '<div style="display: block;">'
-  scriptTree.forEach(function(f) {
-    if (f.path != lastpath && f.type == 'folder') {
-      indent = (f.path.match(/\//g) || []).length + 1;
-      var name = f.path.match(/[^\/]+$/);
-      folder_id = f._id;
-      str += '<div draggable="true" x-data-path="' + f.path + '" x-data-id="' + f._id + '" x-data-folder="' + folder_id + '" style="margin-left: ' + indent + 'em;" class="lifolder" onclick="toggleCollapse(this);"><span class="fname">' + name + '</span></div>';
-      lastpath = f.path;
-      indent += 1;
-    }
-    if (f.type != 'folder') {
-        str += '<div id="' + f._id + '" draggable="true"  x-data-path="' + f.path + '" x-data-id="' + f._id + '" x-data-folder="' + folder_id + '" style="margin-left: ' + indent + 'em;" class="liscript" onclick="goScript(this);"><span class="fname">' + f.name + '</span> [<span class="ftype">' + f.filetype + '</span>]</div>';
-    }
+// ---------------------------------------------------------------- script tree
+var treeIndex = {};      // folder path -> { folder, children: [items] }
+var collapsedFolders = {};
+try { collapsedFolders = JSON.parse(parent.getstore('_scripttask_collapsed', '{}')) || {}; } catch (e) { collapsedFolders = {}; }
+var internalDrag = null; // item being dragged within the tree
 
+function escHtml(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function parentPathOf(p) { var i = p.lastIndexOf('/'); return (i > 0) ? p.substring(0, i) : null; }
+function sortItems(a, b) {
+  var ao = (typeof a.sortOrder == 'number'), bo = (typeof b.sortOrder == 'number');
+  if (ao && bo && a.sortOrder != b.sortOrder) return a.sortOrder - b.sortOrder;
+  if (ao != bo) return ao ? -1 : 1;                     // ordered items first, new/unordered after
+  if (a.type != b.type) return (a.type == 'folder') ? -1 : 1; // default: folders before scripts
+  return String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' });
+}
+function buildTreeIndex() {
+  treeIndex = {};
+  scriptTree.forEach(function(f) { if (f.type == 'folder') treeIndex[f.path] = { folder: f, children: [] }; });
+  var roots = [];
+  scriptTree.forEach(function(f) {
+    var pp = (f.type == 'folder') ? parentPathOf(f.path) : f.path;
+    if (f.type == 'folder' && pp == null) { roots.push(f); return; }
+    var holder = treeIndex[pp] || treeIndex['Shared'];   // orphans show up under Shared rather than vanish
+    if (holder) holder.children.push(f); else roots.push(f);
   });
+  for (var k in treeIndex) treeIndex[k].children.sort(sortItems);
+  roots.sort(function(a, b) { return (a.path == 'Shared') ? -1 : (b.path == 'Shared') ? 1 : sortItems(a, b); });
+  return roots;
+}
+function renderItem(f, depth, folderId) {
+  var pad = 'margin-left: ' + (depth + 1) + 'em;';
+  if (f.type == 'folder') {
+    var collapsed = !!collapsedFolders[f.path];
+    var h = '<div draggable="true" x-data-type="folder" x-data-path="' + escHtml(f.path) + '" x-data-id="' + f._id + '" x-data-folder="' + f._id + '" style="' + pad + '" class="lifolder' + (collapsed ? ' collapsed' : '') + '" onclick="goScript(this);" ondblclick="toggleCollapse(this);" title="Double-click or use the arrow to expand/collapse">'
+          + '<span class="twisty" onclick="event.stopPropagation(); toggleCollapse(this.parentNode);">' + (collapsed ? '&#9654;' : '&#9660;') + '</span><span class="fname">' + escHtml(f.name) + '</span></div>';
+    var kids = (treeIndex[f.path] || { children: [] }).children;
+    h += '<div class="ligroup" x-data-path="' + escHtml(f.path) + '"' + (collapsed ? ' style="display:none"' : '') + '>';
+    kids.forEach(function(c) { h += renderItem(c, depth + 1, f._id); });
+    return h + '</div>';
+  }
+  return '<div id="' + f._id + '" draggable="true" x-data-type="script" x-data-path="' + escHtml(f.path) + '" x-data-id="' + f._id + '" x-data-folder="' + folderId + '" style="' + pad + '" class="liscript" onclick="goScript(this);"><span class="fname">' + escHtml(f.name) + '</span> [<span class="ftype">' + escHtml(f.filetype) + '</span>]</div>';
+}
+function redrawScriptTree() {
+  var roots = buildTreeIndex();
+  var str = '<div id="scriptTreeRoot" style="display: block; padding-bottom: 20px;">';
+  roots.forEach(function(r) { str += renderItem(r, 0, r._id); });
   str += '</div>';
   document.getElementById('scriptContainer').innerHTML = str;
-  var liScripts = document.querySelectorAll('.liscript');
-  var liFolders = document.querySelectorAll('.lifolder');
-  liScripts.forEach(function(el) {
-    el.addEventListener('mousedown', function() { elementDragged = true; });
-    el.addEventListener('mouseup', function() { elementDragged = false; });
-    el.addEventListener('dragstart', function(evt) { evt.dataTransfer.setData('text/plain', evt.target.getAttribute('x-data-id')); });
-  });
-  liFolders.forEach(function(el) {
-    el.addEventListener('drop', dropMove);
-    el.addEventListener('dragover', function(e) { e.preventDefault(); });
-    el.addEventListener('mousedown', function() { elementDragged = true; });
-    el.addEventListener('mouseup', function() { elementDragged = false; });
-    el.addEventListener('dragstart', function(evt) { evt.dataTransfer.setData('text/plain', evt.target.getAttribute('x-data-id')); });
+  document.querySelectorAll('.liscript, .lifolder').forEach(function(el) {
+    el.addEventListener('dragstart', treeDragStart);
+    el.addEventListener('dragend', treeDragEnd);
+    el.addEventListener('dragover', treeDragOver);
+    el.addEventListener('dragleave', function() { clearDropMarks(this); });
+    el.addEventListener('drop', treeDrop);
   });
   resizeIframe();
   selectPreviouslySelectedScript();
+}
+
+// item lookup helpers
+function findItem(id) { for (var i = 0; i < scriptTree.length; i++) if (String(scriptTree[i]._id) == String(id)) return scriptTree[i]; return null; }
+function containerPathOf(item) { return (item.type == 'folder') ? parentPathOf(item.path) : item.path; }
+function siblingsIn(path) { return (treeIndex[path] ? treeIndex[path].children.slice() : []); }
+function isInside(path, folderPath) { return path === folderPath || path.indexOf(folderPath + '/') === 0; }
+
+function sendReorder(item, toPath, orderedItems) {
+  if (item.type == 'folder' && isInside(toPath, item.path)) { parent.setDialogMode(2, "Oops!", 1, null, 'A folder can\'t be moved into itself.'); return; }
+  parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'reorder', id: item._id, toPath: toPath, order: orderedItems.map(function(o) { return o._id; }) });
+}
+// Place item before/after target (same folder as target), or at the end of folder target ("into").
+function placeItem(item, target, where) {
+  if (item == null || target == null || String(item._id) == String(target._id)) return;
+  var toPath = (where == 'into') ? target.path : containerPathOf(target);
+  if (toPath == null) return; // can't place next to the root folder
+  var sibs = siblingsIn(toPath).filter(function(s) { return String(s._id) != String(item._id); });
+  if (where == 'into') sibs.push(item);
+  else {
+    var idx = sibs.findIndex(function(s) { return String(s._id) == String(target._id); });
+    sibs.splice(where == 'before' ? idx : idx + 1, 0, item);
+  }
+  sendReorder(item, toPath, sibs);
+}
+
+// drag and drop
+function clearDropMarks(el) { el.classList.remove('drop-before', 'drop-after', 'drop-into'); }
+function dropPosition(el, evt) {
+  var r = el.getBoundingClientRect(), y = (evt.clientY - r.top) / r.height;
+  if (el.getAttribute('x-data-type') == 'folder') {
+    if (el.getAttribute('x-data-path') == 'Shared') return 'into';
+    return (y < 0.3) ? 'before' : 'into';
+  }
+  return (y < 0.5) ? 'before' : 'after';
+}
+function treeDragStart(evt) {
+  internalDrag = findItem(this.getAttribute('x-data-id'));
+  if (internalDrag && internalDrag.type == 'folder' && internalDrag.path == 'Shared') { internalDrag = null; evt.preventDefault(); return; }
+  elementDragged = true;
+  evt.dataTransfer.effectAllowed = 'move';
+  evt.dataTransfer.setData('text/plain', this.getAttribute('x-data-id'));
+  this.classList.add('dragging');
+  evt.stopPropagation();
+}
+function treeDragEnd() {
+  this.classList.remove('dragging');
+  document.querySelectorAll('.drop-before, .drop-after, .drop-into').forEach(clearDropMarks);
+  internalDrag = null; elementDragged = false;
+}
+function treeDragOver(evt) {
+  if (internalDrag == null) return; // file drags are handled by the upload drop zone
+  evt.preventDefault(); evt.stopPropagation();
+  evt.dataTransfer.dropEffect = 'move';
+  var pos = dropPosition(this, evt);
+  clearDropMarks(this);
+  this.classList.add('drop-' + pos);
+}
+function treeDrop(evt) {
+  if (internalDrag == null) return;
+  evt.preventDefault(); evt.stopPropagation();
+  var pos = dropPosition(this, evt);
+  clearDropMarks(this);
+  placeItem(internalDrag, findItem(this.getAttribute('x-data-id')), pos);
+  internalDrag = null; elementDragged = false;
+}
+
+// toolbar: Move / Up / Down
+function selectedItem() { var els = document.querySelectorAll('.liselected'); return els.length ? findItem(els[0].getAttribute('x-data-id')) : null; }
+function goMoveStep(dir) {
+  var item = selectedItem();
+  if (item == null || (item.type == 'folder' && item.path == 'Shared')) return;
+  var path = containerPathOf(item);
+  var sibs = siblingsIn(path);
+  var idx = sibs.findIndex(function(s) { return String(s._id) == String(item._id); });
+  var to = idx + dir;
+  if (idx < 0 || to < 0 || to >= sibs.length) return;
+  sibs.splice(idx, 1); sibs.splice(to, 0, item);
+  sendReorder(item, path, sibs);
+}
+function moveToEx() {
+  var item = findItem(parent.document.getElementById('stmoveid').value);
+  var toPath = parent.document.getElementById('stmovedest').value;
+  if (item == null || toPath == null) return;
+  var sibs = siblingsIn(toPath).filter(function(s) { return String(s._id) != String(item._id); });
+  sibs.push(item);
+  sendReorder(item, toPath, sibs);
+}
+function goMoveTo() {
+  var item = selectedItem();
+  if (item == null) { parent.setDialogMode(2, "Oops!", 1, null, 'Select a script or folder to move.'); return; }
+  if (item.type == 'folder' && item.path == 'Shared') return;
+  var current = containerPathOf(item);
+  var opts = '';
+  Object.keys(treeIndex).sort(function(a, b) { return a.localeCompare(b, undefined, { sensitivity: 'base' }); }).forEach(function(p) {
+    if (item.type == 'folder' && isInside(p, item.path)) return; // not into itself
+    opts += '<option value="' + escHtml(p) + '"' + (p == current ? ' selected' : '') + '>' + escHtml(p.split('/').join(' / ')) + '</option>';
+  });
+  parent.setDialogMode(2, 'Move "' + escHtml(item.name) + '"', 3, moveToEx, 'Move to folder:<br /><select id="stmovedest" style="width:100%">' + opts + '</select><input type="hidden" id="stmoveid" value="' + item._id + '" />');
 }
   parent.pluginHandler.scripttask.newScriptTree = function(message) {
       scriptTree = message.event.tree;
@@ -948,7 +1087,8 @@ function redrawScriptTree() {
     var els = document.querySelectorAll('.liselected');
     if (els.length == 0) return;
     var el = els[0];
-    var name = el.innerHTML;
+    var name = escHtml(el.querySelector('.fname').textContent);
+    if (el.getAttribute('x-data-type') == 'folder') name += ' and everything in it';
     var id = el.getAttribute('x-data-id');
     parent.setDialogMode(2, "Delete " + name, 3, deleteEx, 'Are you sure? <input type="hidden" id="stdelid" value="' + id + '" />'); 
   }
@@ -961,24 +1101,18 @@ function redrawScriptTree() {
       parent.setDialogMode(2, "Delete Schedule", 3, deleteScheduleEx, 'Are you sure you want to delete this schedule? <input type="hidden" id="stdelid" value="' + id + '" />'); 
   }
   function toggleCollapse(el) {
-    var xdf = el.getAttribute('x-data-path');
-    var folderEls = document.querySelectorAll('.lifolder, .liscript');
-    var showHide = null;
-    folderEls.forEach(function(e){
-      if (e === el) return;
-      if (e.getAttribute('x-data-path').indexOf(xdf) !== -1) {
-        if (e.style.display == 'none') { 
-          if (showHide === null) showHide = '';
-        } else {
-          if (showHide === null) showHide = 'none';
-        }
-        e.style.display = showHide; 
-      }
-    });
+    var path = el.getAttribute('x-data-path');
     goScript(el);
+    if (collapsedFolders[path]) delete collapsedFolders[path]; else collapsedFolders[path] = true;
+    try { parent.putstore('_scripttask_collapsed', JSON.stringify(collapsedFolders)); } catch (e) { }
+    var grp = el.nextElementSibling;
+    if (grp && grp.classList.contains('ligroup')) grp.style.display = collapsedFolders[path] ? 'none' : '';
+    el.classList.toggle('collapsed', !!collapsedFolders[path]);
+    var tw = el.querySelector('.twisty'); if (tw) tw.innerHTML = collapsedFolders[path] ? '&#9654;' : '&#9660;';
   }
   function handleFileSelect(evt) {
     evt.preventDefault();
+    if (internalDrag != null || !isFileDrag(evt)) return;
     var files = evt.dataTransfer.files; // FileList object
     // files is a FileList of File objects. List some properties.
     QV('dropBlock', false);
@@ -1010,8 +1144,9 @@ function redrawScriptTree() {
   var dropZone = document.getElementById('scriptTaskUser');
   var dropBlock = document.getElementById('dropBlock');
   var dragTimer = null;
+  function isFileDrag(e) { try { return Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1; } catch (ex) { return false; } }
   function allowDrag(e) {
-      if (!elementDragged) {  // Test that the item being dragged is a valid one
+      if (!elementDragged && internalDrag == null && isFileDrag(e)) {  // only show the upload overlay for files from the desktop
           e.dataTransfer.dropEffect = 'copy';
           QV('dropBlock', true);
           e.preventDefault();
@@ -1020,11 +1155,6 @@ function redrawScriptTree() {
       }
   }
   
-  function dropMove(evt) {
-    const move_id = evt.dataTransfer.getData('text');
-    const container_id = evt.target.parentNode.getAttribute('x-data-id');
-    parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'move', id: move_id, to: container_id });
-  }
   // file upload events
   window.addEventListener('dragenter', function(e) {
       dragCounter++;

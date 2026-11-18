@@ -56,8 +56,16 @@ module.exports.CreateDB = function(meshserver) {
             ).sort(
                 { path: 1, type: 1, name: 1 }
             ).project(
-                { name: 1, path: 1, type: 1, filetype: 1 }
+                { name: 1, path: 1, type: 1, filetype: 1, sortOrder: 1 }
             ).toArray();
+        };
+        obj.getTreeItems = function() {
+            return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] } } ).project( { name: 1, path: 1, type: 1, sortOrder: 1 } ).toArray();
+        };
+        obj.deleteScriptSchedulesAndPendingJobs = function(scriptId) {
+            var sid = String(scriptId);
+            return obj.scriptFile.deleteMany( { type: 'jobSchedule', scriptId: sid } )
+            .then(() => obj.scriptFile.deleteMany( { type: 'job', scriptId: sid, completeTime: null } ));
         };
         
         obj.update = function(id, args) {
@@ -78,8 +86,8 @@ module.exports.CreateDB = function(meshserver) {
           return obj.scriptFile.deleteMany( { path: path, type: { $in: ['script', 'folder'] } } );
         };
         obj.deleteSchedulesForScript = function(id) {
-            id = formatId(id);
-            return obj.scriptFile.deleteMany( { type: 'jobSchedule', scriptId: id } );
+            // schedules store scriptId as the string id sent by the browser
+            return obj.scriptFile.deleteMany( { type: 'jobSchedule', scriptId: String(id) } );
         };
         obj.getByPath = function(path) {
           return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] }, path: path }).toArray();

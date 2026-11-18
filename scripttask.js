@@ -458,33 +458,86 @@ module.exports.scripttask = function (parent) {
         }
     };
 
-    obj.deleteElement = function (command) {
-        var delObj = null;
-        obj.db.get(command.id)
-        .then((found) => {
-          var file = found[0];
-          delObj = {...{}, ...found[0]};
-          return file;
-        })
-        .then((file) => {
-          if (file.type == 'folder') return obj.db.deleteByPath(file.path); //@TODO delete schedules for scripts within folders
-          if (file.type == 'script') return obj.db.deleteSchedulesForScript(file._id);
-          if (file.type == 'jobSchedule') return obj.db.deletePendingJobsForSchedule(file._id);
-        })
-        .then(() => {
-          return obj.db.delete(command.id)
-        })
-        .then(() => {
-          var updateObj = { tree: true };
-          if (delObj.type == 'jobSchedule') {
-              updateObj.scriptId = delObj.scriptId;
-              updateObj.nodeId = delObj.node;
-          }
-          return obj.updateFrontEnd( updateObj );
-        })
-        .catch(e => { console.log('PLUGIN: ScriptTask: Error deleting ', e.stack); });
+    obj.deleteElement = async function (command) {
+        try {
+            var found = await obj.db.get(command.id);
+            var file = found[0];
+            if (file == null) return;
+            var updateObj = { tree: true };
+            if (file.type == 'folder') {
+                if (file.path == 'Shared') throw Error('Cannot delete the top level folder: Shared');
+                // delete everything inside, including nested folders, and their schedules / pending jobs
+                var all = await obj.db.getTreeItems();
+                var inside = all.filter(d => d._id != file._id && obj.isWithinPath(d.path, file.path));
+                for (const d of inside) {
+                    if (d.type == 'script') await obj.db.deleteScriptSchedulesAndPendingJobs(d._id);
+                    await obj.db.delete(d._id);
+                }
+            } else if (file.type == 'script') {
+                await obj.db.deleteScriptSchedulesAndPendingJobs(file._id);
+            } else if (file.type == 'jobSchedule') {
+                await obj.db.deletePendingJobsForSchedule(file._id);
+                updateObj.scriptId = file.scriptId;
+                updateObj.nodeId = file.node;
+            }
+            await obj.db.delete(command.id);
+            obj.updateFrontEnd(updateObj);
+        } catch (e) { console.log('PLUGIN: ScriptTask: Error deleting ', e); }
     };
-    
+
+    // ---- Script tree organisation -------------------------------------------------------------
+    // Folders store their full path (e.g. "Shared/Installers"); scripts store the path of the folder
+    // they are in. "sortOrder" (optional) orders items within a folder; unordered items go last.
+
+    obj.isWithinPath = function (path, folderPath) {
+        return path === folderPath || (typeof path == 'string' && path.indexOf(folderPath + '/') === 0);
+    };
+
+    // Re-root every item at or below oldPath to newPath (covers nested folders).
+    obj.repath = async function (oldPath, newPath) {
+        if (oldPath === newPath) return;
+        var all = await obj.db.getTreeItems();
+        for (const d of all) {
+            if (obj.isWithinPath(d.path, oldPath)) {
+                await obj.db.update(d._id, { path: newPath + d.path.substring(oldPath.length) });
+            }
+        }
+    };
+
+    // Move an item (script or folder) into the folder at toPath and/or set the order of that folder's
+    // children. "order" is the full list of child ids for the destination folder, in display order.
+    obj.reorderItem = async function (id, toPath, order) {
+        var found = await obj.db.get(id);
+        var item = found[0];
+        if (item == null || (item.type != 'script' && item.type != 'folder')) throw Error('Item not found');
+        var all = await obj.db.getTreeItems();
+        var dest = all.find(d => d.type == 'folder' && d.path === toPath);
+        if (dest == null) throw Error('Destination folder not found: ' + toPath);
+
+        if (item.type == 'folder') {
+            if (item.path == 'Shared') throw Error('Cannot move the top level folder: Shared');
+            var currentParent = item.path.substring(0, item.path.lastIndexOf('/'));
+            if (currentParent !== toPath) {
+                if (obj.isWithinPath(toPath, item.path)) throw Error('Cannot move a folder into itself');
+                var newPath = toPath + '/' + item.name;
+                if (all.some(d => d.type == 'folder' && d.path === newPath)) throw Error('A folder named "' + item.name + '" already exists there');
+                await obj.repath(item.path, newPath);
+            }
+        } else if (item.path !== toPath) {
+            await obj.db.update(item._id, { path: toPath });
+        }
+
+        if (Array.isArray(order)) {
+            var ids = order.map(String);
+            if (ids.indexOf(String(item._id)) === -1) ids.push(String(item._id));
+            var valid = {};
+            all.forEach(d => { valid[String(d._id)] = true; });
+            for (var k = 0; k < ids.length; k++) {
+                if (valid[ids[k]]) await obj.db.update(ids[k], { sortOrder: k });
+            }
+        }
+    };
+
     obj.serveraction = function(command, myparent, grandparent) {
         switch (command.pluginaction) {
             case 'addScript':
@@ -514,76 +567,38 @@ module.exports.scripttask = function (parent) {
                 .catch(e => { console.log('PLUGIN: ScriptTask: Error creating script: ', e); });
             break;
             case 'rename':
-              obj.db.get(command.id)
-              .then((docs) => {
+              (async () => {
+                  var name = String(command.name || '').trim();
+                  if (name == '' || name.indexOf('/') !== -1) throw Error('Invalid name');
+                  var docs = await obj.db.get(command.id);
                   var doc = docs[0];
+                  if (doc == null) return;
                   if (doc.type == 'folder') {
-                      return obj.db.update(command.id, { path: doc.path.replace(doc.name, command.name) })
-                      .then(() => { // update sub-items
-                          return obj.db.getByPath(doc.path)
-                      })
-                      .then((found) => {
-                          if (found.length > 0) {
-                            var proms = [];
-                            found.forEach(f => {
-                              proms.push(obj.db.update(f._id, { path: doc.path.replace(doc.name, command.name) } ));
-                            })
-                            return Promise.all(proms);
-                          }
-                      })
-                  } else {
-                      return Promise.resolve();
+                      if (doc.path == 'Shared') throw Error('Cannot rename the top level folder: Shared');
+                      var newPath = doc.path.substring(0, doc.path.lastIndexOf('/')) + '/' + name;
+                      var all = await obj.db.getTreeItems();
+                      if (all.some(d => d.type == 'folder' && d.path === newPath && String(d._id) != String(doc._id))) throw Error('A folder with that name already exists');
+                      await obj.repath(doc.path, newPath);
                   }
-              })
-              .then(() => {
-                  return obj.db.update(command.id, { name: command.name });
-              })
-              .then(() => {
-                  return obj.db.updateScriptJobName(command.id, command.name);
-              })
-              .then(() => {
+                  await obj.db.update(command.id, { name: name });
+                  if (doc.type == 'script') await obj.db.updateScriptJobName(command.id, name);
                   obj.updateFrontEnd( { scriptId: command.id, nodeId: command.currentNodeId, tree: true } );
-              })
-              .catch(e => { console.log('PLUGIN: ScriptTask: Error renaming: ', e); });
+              })()
+              .catch(e => { console.log('PLUGIN: ScriptTask: Error renaming: ', e.message || e); obj.updateFrontEnd({ tree: true }); });
             break;
-            case 'move':
-              var toPath = null, fromPath = null, parentType = null;
+            case 'move': // legacy: drop onto a folder = move to the end of it
               obj.db.get(command.to)
-              .then(found => { // get target data
-                  if (found.length > 0) {
-                    var file = found[0];
-                    toPath = file.path;
-                  } else throw Error('Target destination not found');
+              .then(found => {
+                  if (found.length == 0 || found[0].type != 'folder') throw Error('Target destination not found');
+                  return obj.reorderItem(command.id, found[0].path, null);
               })
-              .then(() => { // get item to be moved
-                return obj.db.get(command.id);
-              })
-              .then((found) => { // set item to new location
-                  var file = found[0];
-                  if (file.type == 'folder') {
-                    fromPath = file.path;
-                    toPath += '/' + file.name;
-                    parentType = 'folder';
-                    if (file.name == 'Shared' && file.path == 'Shared') throw Error('Cannot move top level directory: Shared');
-                  }
-                  return obj.db.update(command.id, { path: toPath } );
-              })
-              .then(() => { // update sub-items
-                  return obj.db.getByPath(fromPath)
-              })
-              .then((found) => {
-                  if (found.length > 0) {
-                    var proms = [];
-                    found.forEach(f => {
-                      proms.push(obj.db.update(f._id, { path: toPath } ));
-                    })
-                    return Promise.all(proms);
-                  }
-              })
-              .then(() => {
-                return obj.updateFrontEnd( { tree: true } );
-              })
-              .catch(e => { console.log('PLUGIN: ScriptTask: Error moving ', e.stack); });
+              .then(() => obj.updateFrontEnd( { tree: true } ))
+              .catch(e => { console.log('PLUGIN: ScriptTask: Error moving: ', e.message || e); obj.updateFrontEnd({ tree: true }); });
+            break;
+            case 'reorder':
+              obj.reorderItem(command.id, command.toPath, command.order)
+              .then(() => obj.updateFrontEnd( { tree: true } ))
+              .catch(e => { console.log('PLUGIN: ScriptTask: Error reordering: ', e.message || e); obj.updateFrontEnd({ tree: true }); });
             break;
             case 'newFolder':
               var parent_path = '';
