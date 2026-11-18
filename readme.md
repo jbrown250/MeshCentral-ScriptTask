@@ -2,6 +2,9 @@
 
 A script running plugin for the [MeshCentral2](https://github.com/Ylianst/MeshCentral) Project. The plugin supports PowerShell, BAT, and Bash scripts. Windows, MacOS, and Linux endpoints are all supported. PowerShell can be run on any OS that has PowerShell installed, not just Windows.
 
+## About this fork
+Maintained fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanblenis/MeshCentral-ScriptTask), which is no longer updated. 0.1.x fixes scripts being run repeatedly, temp files piling up in the MeshAgent folder, and long-running scripts losing their status. It also makes the tab fill the browser window. See [changelog.md](changelog.md) for details.
+
 ## Important Note
 **This plugin now supports NeDB and MongoDB**
 
@@ -14,7 +17,7 @@ A script running plugin for the [MeshCentral2](https://github.com/Ylianst/MeshCe
 Restart your MeshCentral server after making this change.
 
  To install, simply add the plugin configuration URL when prompted:
- `https://raw.githubusercontent.com/ryanblenis/MeshCentral-ScriptTask/master/config.json`
+ `https://raw.githubusercontent.com/jbrown250/MeshCentral-ScriptTask/master/config.json`
 
 ## Features
 - Add scripts to a central store
