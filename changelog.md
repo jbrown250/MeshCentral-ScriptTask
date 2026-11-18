@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/ryanblenis/MeshCentral-ScriptTask) if you find anything.
 
+## [0.1.1] - 2026-11-18
+### Fixed
+- Removed the agent's check for jobs whose process seemed to have disappeared. It could mark long-running scripts (e.g. backups) as failed with "Script process disappeared before completing" while they were still running. Jobs now stay "Running" until the script actually exits.
+- The agent now holds a reference to each running script's process object until it exits. Without it, the agent's garbage collector could clean the object up mid-run. That can drop the exit event (the job hangs as "Running") and may kill the script. This is a likely cause of long scripts dying partway through, and of the repeat runs in older versions. There is no run-time limit. An agent restart mid-run is still reported as "interrupted".
+
+## [0.1.0] - 2026-11-10
+### Fixed
+- Scripts being launched over and over. The server re-sent every unfinished job to the agent every minute, and the agent's duplicate check was unreliable (a broken array helper removed the wrong entries from the running-jobs list). Jobs are now only re-sent when the agent reconnects, or after 15 minutes to recover a lost result, and the agent keeps a persistent record of each job it has run.
+- A job that already finished is never run again: the agent re-sends its saved result instead.
+- If the agent restarts or the device reboots while a job is running (for example, a script that restarts the agent), the job is reported as "interrupted" and is not re-run in a loop.
+- Overlapping queue runs (the timer, "Run" button and job completion firing together) could dispatch the same job or create the same scheduled job twice. Queue runs and schedule processing are now serialized.
+- Temp script and output files filling the MeshAgent folder. They now go in a `scripttask` subfolder, each file is deleted on its own (previously, a failed delete of the output file left the script file behind), and leftover `st*.ps1/.bat/.sh/.txt` files from older versions are cleaned up automatically.
+- The agent module no longer modifies `Array.prototype` for the whole meshcore.
+- Variable substitution no longer changes the cached script when several jobs share a download. Variable names containing regex characters now work.
+- Jobs for deleted scripts are closed with an error instead of being retried every minute. Schedules for deleted scripts are removed.
+- NeDB query state (sort, limit, projection) leaked between queries.
+- `jobComplete` is ignored for jobs that belong to a different device, and duplicate reports are ignored.
+- MongoDB: uses the promise API (driver 5/6 removed callbacks), creates ObjectIds correctly, and no longer exits the MeshCentral process when the connection fails.
+- Bash scripts edited in the UI now have CRLF line endings normalised.
+- Weekly schedules no longer write to the server console every minute.
+- Smaller fixes: `clearInterval` on timer reset, a ReferenceError in single-node scheduling, and missing promise returns in new/rename.
+### Changed
+- The ScriptTask tab now fills the browser window and resizes with it, instead of a fixed 700px frame. The script list and the info panels scroll on their own, and the horizontal scrollbar is gone.
+### Added
+- Agent console commands: `plugin scripttask status`, `plugin scripttask cleanup` and `plugin scripttask clearState`.
+- Database indexes on `type`/`completeTime` and `jobSchedule`.
+
 ## [0.0.20] - 2025-01-08
 ### Fixed
 - Merge PR fixing MeshCentral 1.1.35+ compatibility
