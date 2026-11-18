@@ -11,7 +11,7 @@
 // require()s this file again. Node would hand back the cached old code, so drop this plugin's files
 // from the module cache now; the next require() after an upgrade then loads the new version.
 (function () {
-    ['scripttask.js', 'db.js', 'nemongo.js'].forEach(function (f) {
+    ['scripttask.js', 'db.js', 'nemongo.js', 'zip.js'].forEach(function (f) {
         try { delete require.cache[require.resolve(require('path').join(__dirname, f))]; } catch (e) { }
     });
 })();
@@ -286,6 +286,7 @@ module.exports.scripttask = function (parent) {
                 res.render(obj.VIEWS + 'schedule', obj.noCache(vars));
                 return;
             }
+            if (req.query.export == 1) return obj.exportScripts(req, res);
             // default user view (tree)
             vars.scriptTree = 'null';
             obj.db.getScriptTree()
@@ -306,6 +307,172 @@ module.exports.scripttask = function (parent) {
         return;
     };
     
+    // ---- Export / import -----------------------------------------------------------------------
+    // Export: a zip whose folders mirror the script tree, one plain .ps1/.bat/.sh file per script,
+    // plus scripttask-export.json recording ids, real names and ordering so a re-import updates
+    // the same scripts. Import: updates scripts that match (by id, then folder + name), creates
+    // new ones and missing folders, and never deletes anything.
+    obj.EXPORT_MANIFEST = 'scripttask-export.json';
+    obj.EXT_BY_TYPE = { ps1: '.ps1', bat: '.bat', bash: '.sh' };
+    obj.TYPE_BY_EXT = { '.ps1': 'ps1', '.bat': 'bat', '.cmd': 'bat', '.sh': 'bash', '.bash': 'bash' };
+
+    obj.safeFileName = function (n) {
+        var r = String(n == null ? '' : n).replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/[. ]+$/, '').trim();
+        if (r == '' || /^(con|prn|aux|nul|com\d|lpt\d)$/i.test(r)) r = '_' + r;
+        return r;
+    };
+
+    obj.buildExport = async function () {
+        var items = await obj.db.scriptFile.find({ type: { $in: ['script', 'folder'] } }).toArray();
+        var folders = items.filter(i => i.type == 'folder').sort((a, b) => a.path.length - b.path.length || a.path.localeCompare(b.path));
+        var zipDirOf = {}, usedNames = {};
+        var unique = function (dir, base, ext) {
+            var key = (dir + '/' + base + ext).toLowerCase(), n = 2, cand = base;
+            while (usedNames[(dir + '/' + cand + ext).toLowerCase()]) cand = base + ' (' + (n++) + ')';
+            usedNames[(dir + '/' + cand + ext).toLowerCase()] = true;
+            return cand + ext;
+        };
+        var manifest = { format: 'meshcentral-scripttask', version: 1, exported: new Date().toISOString(), folders: [], scripts: [] };
+        var entries = [];
+        folders.forEach(f => {
+            var parentPath = f.path.indexOf('/') > 0 ? f.path.substring(0, f.path.lastIndexOf('/')) : null;
+            var parentDir = (parentPath != null) ? (zipDirOf[parentPath] || obj.safeFileName(parentPath)) : '';
+            var seg = obj.safeFileName(f.path.substring(f.path.lastIndexOf('/') + 1));
+            var dir = parentDir ? (parentDir + '/' + unique(parentDir, seg, '')) : unique('', seg, '');
+            zipDirOf[f.path] = dir;
+            entries.push({ name: dir + '/' });
+            manifest.folders.push({ dir: dir, path: f.path, id: String(f._id), sortOrder: (typeof f.sortOrder == 'number') ? f.sortOrder : null });
+        });
+        items.filter(i => i.type == 'script').forEach(sc => {
+            var dir = zipDirOf[sc.path] || zipDirOf['Shared'] || 'Shared';
+            var file = dir + '/' + unique(dir, obj.safeFileName(sc.name), obj.EXT_BY_TYPE[sc.filetype] || '.txt');
+            entries.push({ name: file, data: sc.content || '' });
+            manifest.scripts.push({ file: file, id: String(sc._id), name: sc.name, filetype: sc.filetype, path: sc.path, sortOrder: (typeof sc.sortOrder == 'number') ? sc.sortOrder : null });
+        });
+        entries.unshift({ name: obj.EXPORT_MANIFEST, data: JSON.stringify(manifest, null, 2) });
+        return { zip: require(__dirname + '/zip.js').createZip(entries), count: manifest.scripts.length };
+    };
+
+    obj.exportScripts = function (req, res) {
+        obj.buildExport()
+        .then(r => {
+            var d = new Date(), pad = n => String(n).padStart(2, '0');
+            var fname = 'scripttask-export-' + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '-' + pad(d.getHours()) + pad(d.getMinutes()) + '.zip';
+            res.setHeader('Content-Type', 'application/zip');
+            res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+            res.setHeader('Cache-Control', 'no-store');
+            res.send(r.zip);
+        })
+        .catch(e => { console.log('PLUGIN: ScriptTask: Export failed: ', e); res.sendStatus(500); });
+    };
+
+    obj.importZip = async function (buf, runBy) {
+        var result = { created: [], updated: [], unchanged: 0, foldersCreated: [], skipped: [] };
+        var entries = require(__dirname + '/zip.js').readZip(buf, { maxEntries: 10000, maxFileSize: 5 * 1024 * 1024, maxTotal: 200 * 1024 * 1024 });
+        // normalise paths; drop anything trying to escape with ".."
+        entries = entries.filter(e => {
+            e.name = e.name.replace(/^\/+/, '');
+            if (e.name.split('/').some(seg => seg == '..')) { result.skipped.push(e.name + ' (invalid path)'); return false; }
+            return e.name != '' && !/(^|\/)__MACOSX\//.test(e.name) && !/(^|\/)(\.DS_Store|Thumbs\.db|desktop\.ini)$/i.test(e.name);
+        });
+        // If the zip was re-packed with an extra wrapper folder (e.g. "export/Shared/..."), strip it.
+        var firstSegs = {};
+        entries.forEach(e => { firstSegs[e.name.split('/')[0]] = true; });
+        var segs = Object.keys(firstSegs);
+        if (!firstSegs['Shared'] && !firstSegs[obj.EXPORT_MANIFEST] && segs.length == 1 && entries.every(e => e.name.indexOf('/') > 0)) {
+            var wrap = segs[0] + '/';
+            entries.forEach(e => { e.name = e.name.substring(wrap.length); });
+            entries = entries.filter(e => e.name != '');
+        }
+
+        var manifest = { folders: [], scripts: [] };
+        var mEntry = entries.find(e => e.name == obj.EXPORT_MANIFEST);
+        if (mEntry && mEntry.data) {
+            try { var m = JSON.parse(mEntry.data.toString('utf8')); if (m && Array.isArray(m.scripts)) manifest = { folders: m.folders || [], scripts: m.scripts }; }
+            catch (e) { result.skipped.push(obj.EXPORT_MANIFEST + ' (unreadable, matching by folder and name instead)'); }
+        }
+        var mScriptByFile = {}, mFolderByDir = {};
+        manifest.scripts.forEach(ms => { if (ms && ms.file) mScriptByFile[String(ms.file).toLowerCase()] = ms; });
+        manifest.folders.forEach(mf => { if (mf && mf.dir) mFolderByDir[String(mf.dir).toLowerCase()] = mf; });
+
+        var all = await obj.db.scriptFile.find({ type: { $in: ['script', 'folder'] } }).toArray();
+        var folderByPath = {};
+        all.filter(d => d.type == 'folder').forEach(f => { folderByPath[f.path.toLowerCase()] = f; });
+        var scriptById = {};
+        all.filter(d => d.type == 'script').forEach(sc => { scriptById[String(sc._id)] = sc; });
+
+        // zip folder -> tree path (manifest knows the real names; otherwise the folder names are used)
+        var treePathOf = function (dir) {
+            if (dir == '') return 'Shared';
+            var mf = mFolderByDir[dir.toLowerCase()];
+            if (mf && typeof mf.path == 'string' && /^Shared(\/|$)/.test(mf.path)) return mf.path;
+            var parts = dir.split('/');
+            var parentPath = (parts.length > 1) ? treePathOf(parts.slice(0, -1).join('/')) : null;
+            var last = parts[parts.length - 1];
+            if (parentPath == null) return (last.toLowerCase() == 'shared') ? 'Shared' : 'Shared/' + last;
+            return parentPath + '/' + last;
+        };
+        var ensureFolder = async function (path, sortOrder) {
+            var parts = path.split('/');
+            for (var i = 1; i <= parts.length; i++) {
+                var pth = parts.slice(0, i).join('/');
+                if (folderByPath[pth.toLowerCase()]) continue;
+                var r = await obj.db.addFolder(parts[i - 1], pth);
+                var doc = { _id: r && r.insertedId, type: 'folder', name: parts[i - 1], path: pth };
+                folderByPath[pth.toLowerCase()] = doc;
+                if (i == parts.length && typeof sortOrder == 'number' && doc._id != null) await obj.db.update(doc._id, { sortOrder: sortOrder });
+                result.foldersCreated.push(pth);
+            }
+            return folderByPath[path.toLowerCase()].path; // existing folder's exact casing
+        };
+
+        for (const e of entries) {
+            if (e.name == obj.EXPORT_MANIFEST) continue;
+            if (e.isDir) {
+                var dpath = treePathOf(e.name.replace(/\/$/, ''));
+                var mf = mFolderByDir[e.name.replace(/\/$/, '').toLowerCase()];
+                await ensureFolder(dpath, mf ? mf.sortOrder : null);
+                continue;
+            }
+            if (e.error) { result.skipped.push(e.name + ' (' + e.error + ')'); continue; }
+            var slash = e.name.lastIndexOf('/');
+            var dir = slash >= 0 ? e.name.substring(0, slash) : '';
+            var base = e.name.substring(slash + 1);
+            var dot = base.lastIndexOf('.');
+            var ext = dot > 0 ? base.substring(dot).toLowerCase() : '';
+            var ftype = obj.TYPE_BY_EXT[ext];
+            if (!ftype) { result.skipped.push(e.name + ' (not a .ps1, .bat, .cmd or .sh file)'); continue; }
+
+            var ms = mScriptByFile[e.name.toLowerCase()];
+            var name = (ms && ms.name) ? String(ms.name) : base.substring(0, dot);
+            var path = await ensureFolder(treePathOf(dir), null);
+            var content = e.data.toString('utf8').replace(/^﻿/, '');
+            if (ftype == 'bash') content = content.split('\r\n').join('\n').split('\r').join('\n');
+
+            // match: manifest id (same server) -> same folder + name -> new
+            var existing = (ms && ms.id && scriptById[String(ms.id)]) || null;
+            if (existing == null) {
+                existing = all.find(d => d.type == 'script' && d.path.toLowerCase() == path.toLowerCase() && String(d.name) === name) || null; // names are case-sensitive ("dup" and "Dup" can both exist)
+            }
+            if (existing) {
+                var changed = (existing.content || '') !== content || existing.name !== name || existing.path !== path || existing.filetype !== ftype;
+                if (!changed) { result.unchanged++; continue; }
+                await obj.db.update(existing._id, { type: 'script', filetype: ftype, name: name, path: path, content: content });
+                if (existing.name !== name) await obj.db.updateScriptJobName(String(existing._id), name);
+                existing.content = content; existing.name = name; existing.path = path; existing.filetype = ftype;
+                result.updated.push(path + '/' + name);
+            } else {
+                var ins = await obj.db.addScript(name, content, path, ftype);
+                var doc = { _id: ins && ins.insertedId, type: 'script', name: name, path: path, filetype: ftype, content: content };
+                if (ms && typeof ms.sortOrder == 'number' && doc._id != null) await obj.db.update(doc._id, { sortOrder: ms.sortOrder });
+                all.push(doc);
+                if (doc._id != null) scriptById[String(doc._id)] = doc;
+                result.created.push(path + '/' + name);
+            }
+        }
+        return result;
+    };
+
     obj.historyData = function (message) {
         if (typeof pluginHandler.scripttask.loadHistory == 'function') pluginHandler.scripttask.loadHistory(message);
         if (typeof pluginHandler.scripttask.loadSchedule == 'function') pluginHandler.scripttask.loadSchedule(message);
@@ -798,6 +965,23 @@ module.exports.scripttask = function (parent) {
                 .then(() => {
                     obj.updateFrontEnd( { variables: true } );
                 })
+            break;
+            case 'importScripts':
+                var target = [command.userid || '*'];
+                Promise.resolve()
+                .then(() => {
+                    if (typeof command.data != 'string' || command.data.length > 40 * 1024 * 1024) throw new Error('Import file missing or too large (max 30 MB).');
+                    return obj.importZip(Buffer.from(command.data, 'base64'), myparent.user ? myparent.user.name : null);
+                })
+                .then(result => {
+                    obj.meshServer.DispatchEvent(target, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'importResult', fileName: command.fileName, result: result });
+                    obj.updateFrontEnd({ tree: true });
+                })
+                .catch(e => {
+                    console.log('PLUGIN: ScriptTask: Import failed: ', e.message || e);
+                    obj.meshServer.DispatchEvent(target, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'importResult', fileName: command.fileName, error: String(e.message || e) });
+                    obj.updateFrontEnd({ tree: true });
+                });
             break;
             case 'deleteVar':
                 obj.db.delete(command.id)

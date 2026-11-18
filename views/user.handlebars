@@ -226,6 +226,9 @@
     <span onclick="goMoveTo();" title="Move the selected script or folder to another folder">Move</span>
     <span onclick="goMoveStep(-1);" title="Move up">&#9650;</span>
     <span onclick="goMoveStep(1);" title="Move down">&#9660;</span>
+    <span onclick="goExport();" title="Download all scripts as a zip you can edit offline">Export</span>
+    <span onclick="goImport();" title="Import a zip: updates matching scripts, adds new ones, deletes nothing">Import</span>
+    <input type="file" id="stImportFile" accept=".zip,application/zip" style="display:none" onchange="importFileChosen(this);" />
   </div>
   <div id="scripts_endpoints">
     <div id="scriptContainer">
@@ -618,6 +621,35 @@ function treeDrop(evt) {
   placeItem(internalDrag, findItem(this.getAttribute('x-data-id')), pos);
   internalDrag = null; elementDragged = false;
 }
+
+// toolbar: Export / Import
+function goExport() { window.location = '/pluginadmin.ashx?pin=scripttask&user=1&export=1'; }
+function goImport() { var f = document.getElementById('stImportFile'); f.value = ''; f.click(); }
+function importFileChosen(input) {
+  var file = input.files && input.files[0];
+  if (!file) return;
+  if (!/\.zip$/i.test(file.name)) { parent.setDialogMode(2, "Import", 1, null, 'Please choose a .zip file (use Export to create one).'); return; }
+  var reader = new FileReader();
+  reader.onload = function () {
+    var bytes = new Uint8Array(reader.result), bin = '', CH = 0x8000;
+    for (var i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    parent.setDialogMode(2, "Import", 0, null, 'Importing ' + escHtml(file.name) + '&hellip;');
+    parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'importScripts', fileName: file.name, data: btoa(bin) });
+  };
+  reader.readAsArrayBuffer(file);
+}
+parent.pluginHandler.scripttask.importResult = function (message) {
+  var ev = message.event || message;
+  if (ev.error) { parent.setDialogMode(2, "Import failed", 1, null, escHtml(ev.error)); return; }
+  var r = ev.result, html = '<div style="max-height:350px;overflow:auto">';
+  var list = function (title, arr) {
+    if (!arr || !arr.length) return '';
+    return '<b>' + title + ' (' + arr.length + ')</b><ul style="margin:2px 0 8px 0;padding-left:20px">' + arr.map(function (x) { return '<li>' + escHtml(x) + '</li>'; }).join('') + '</ul>';
+  };
+  html += list('Updated', r.updated) + list('Added', r.created) + list('New folders', r.foldersCreated) + list('Skipped', r.skipped);
+  html += '<div>' + r.unchanged + ' unchanged.</div></div>';
+  parent.setDialogMode(2, 'Imported ' + escHtml(ev.fileName || ''), 1, null, html);
+};
 
 // toolbar: Move / Up / Down
 function selectedItem() { var els = document.querySelectorAll('.liselected'); return els.length ? findItem(els[0].getAttribute('x-data-id')) : null; }

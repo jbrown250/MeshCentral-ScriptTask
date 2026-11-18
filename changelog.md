@@ -7,6 +7,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
 ## [0.1.3] - 2026-11-18
+### Added
+- **Export** downloads all scripts as a zip: one plain `.ps1` / `.bat` / `.sh` file per script, in folders matching the tree, plus `scripttask-export.json` (ids, real names, order). Edit the files offline in any editor.
+- **Import** takes a zip back. It updates scripts that match (by id, then by folder and name), adds new scripts and folders, and never deletes anything. Works for restoring onto a new server, and for zips without the manifest (names come from the file names; `.cmd` is treated as BAT). A summary shows what was updated, added and skipped.
 ### Fixed
 - Upgrading from My Server > Plugins no longer needs a MeshCentral restart. The plugin drops its files from Node's module cache so the new code loads, and renders its pages without Express's view cache.
 - An in-place upgrade no longer opens a second database instance on `plugin-scripttask.db`. Two instances could overwrite each other's changes when compacting. The existing database handle is now reused.

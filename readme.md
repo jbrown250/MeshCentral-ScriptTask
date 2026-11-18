@@ -5,6 +5,11 @@ A script running plugin for the [MeshCentral2](https://github.com/Ylianst/MeshCe
 ## About this fork
 Maintained fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanblenis/MeshCentral-ScriptTask), which is no longer updated. 0.1.x fixes scripts being run repeatedly, temp files piling up in the MeshAgent folder, and long-running scripts losing their status. It also makes the tab fill the browser window. See [changelog.md](changelog.md) for details.
 
+## Export / Import
+- **Export** (toolbar) downloads `scripttask-export-<date>.zip` with every script as a normal file, in folders matching the script tree. Characters Windows can't use in file names are replaced with `_`; the real names are kept in `scripttask-export.json`, so leave that file in the zip.
+- Edit, add or re-arrange files offline, then **Import** the zip. Matching scripts are updated, new files and folders are added, and nothing is deleted. Files that aren't `.ps1`, `.bat`, `.cmd` or `.sh` are skipped.
+- A file renamed offline is imported as a new script (the old one stays), because it no longer matches by name.
+
 ## Important Note
 **This plugin now supports NeDB and MongoDB**
 
