@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
+## [0.1.3] - 2026-11-18
+### Fixed
+- Upgrading from My Server > Plugins no longer needs a MeshCentral restart. The plugin drops its files from Node's module cache so the new code loads, and renders its pages without Express's view cache.
+- An in-place upgrade no longer opens a second database instance on `plugin-scripttask.db`. Two instances could overwrite each other's changes when compacting. The existing database handle is now reused.
+- Note: this takes effect from the *next* upgrade after 0.1.3 is running. Restart MeshCentral once after installing 0.1.3.
+
 ## [0.1.2] - 2026-11-18
 ### Added
 - Organise the script list: drag a script or folder onto another item to place it before or after it, or onto a folder to move it in. Toolbar **Move** (pick a folder) and **▲ / ▼** (reorder) do the same without dragging. The order is saved per folder; new scripts go at the end.

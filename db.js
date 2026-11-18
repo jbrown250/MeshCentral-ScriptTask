@@ -256,6 +256,18 @@ module.exports.CreateDB = function(meshserver) {
         obj.checkDefaults();
     };
     
+    // An in-place plugin upgrade creates a new instance of this module. Reuse the existing database
+    // handle instead of opening a second one: two NeDB instances on one file overwrite each other's
+    // data when they compact. The query functions are still rebuilt from the new code.
+    var ph = meshserver.pluginHandler || {};
+    var shared = ph._scripttaskStore;
+    if (shared != null && shared.collection != null) {
+        obj.scriptFile = (shared.kind == 'nedb') ? new NEMongo(shared.collection) : shared.collection;
+        formatId = shared.formatId;
+        obj.initFunctions();
+        return obj;
+    }
+
     if (meshserver.args.mongodb) { // use MongDB
       // Promise API: works with mongodb driver 3.x through 6.x (callbacks were removed in 5.x)
       require('mongodb').MongoClient.connect(meshserver.args.mongodb)
@@ -271,6 +283,7 @@ module.exports.CreateDB = function(meshserver) {
               return (typeof mongodb.ObjectId == 'function') ? new mongodb.ObjectId(id) : mongodb.ObjectID(id);
           };
           obj.initFunctions();
+          ph._scripttaskStore = { kind: 'mongo', collection: obj.scriptFile, formatId: formatId };
 
           try {
               var indexes = await obj.scriptFile.indexes();
@@ -310,6 +323,7 @@ module.exports.CreateDB = function(meshserver) {
         }
         obj.scriptFile = new NEMongo(obj.scriptFilex);
         formatId = function(id) { return id; };
+        ph._scripttaskStore = { kind: 'nedb', collection: obj.scriptFilex, formatId: formatId };
         obj.initFunctions();
     }
     

@@ -7,6 +7,15 @@
 
 "use strict";
 
+// MeshCentral's in-place plugin upgrade (My Server > Plugins > Upgrade) unpacks the new files and then
+// require()s this file again. Node would hand back the cached old code, so drop this plugin's files
+// from the module cache now; the next require() after an upgrade then loads the new version.
+(function () {
+    ['scripttask.js', 'db.js', 'nemongo.js'].forEach(function (f) {
+        try { delete require.cache[require.resolve(require('path').join(__dirname, f))]; } catch (e) { }
+    });
+})();
+
 module.exports.scripttask = function (parent) {
     var obj = {};
     obj.parent = parent;
@@ -49,6 +58,9 @@ module.exports.scripttask = function (parent) {
     obj.REDISPATCH_SAME_CONNECTION_SECS = 15 * 60;
     obj.queueRunning = false;
     obj.queueRunAgain = false;
+
+    // Render plugin views without Express's view cache so an upgrade shows the new pages immediately.
+    obj.noCache = function(vars) { vars = vars || {}; vars.cache = false; return vars; };
 
     obj.server_startup = function() {
         obj.meshServer.pluginHandler.scripttask_db = require (__dirname + '/db.js').CreateDB(obj.meshServer);
@@ -245,7 +257,7 @@ module.exports.scripttask = function (parent) {
         {
             // admin wants admin, grant
             var vars = {};
-            res.render(obj.VIEWS + 'admin', vars);
+            res.render(obj.VIEWS + 'admin', obj.noCache(vars));
             return;
         } else if (req.query.admin == 1 && (user.siteadmin & 0xFFFFFFFF) == 0) {
             // regular user wants admin
@@ -262,16 +274,16 @@ module.exports.scripttask = function (parent) {
                 .then((scripts) => {
                     if (scripts[0].filetype == 'proc') {
                         vars.procData = JSON.stringify(scripts[0]);
-                        res.render(obj.VIEWS + 'procedit', vars);
+                        res.render(obj.VIEWS + 'procedit', obj.noCache(vars));
                     } else {
                         vars.scriptData = JSON.stringify(scripts[0]);
-                        res.render(obj.VIEWS + 'scriptedit', vars);
+                        res.render(obj.VIEWS + 'scriptedit', obj.noCache(vars));
                     }
                 });
                 return;
             } else if (req.query.schedule == 1) {
                 var vars = {};
-                res.render(obj.VIEWS + 'schedule', vars);
+                res.render(obj.VIEWS + 'schedule', obj.noCache(vars));
                 return;
             }
             // default user view (tree)
@@ -279,7 +291,7 @@ module.exports.scripttask = function (parent) {
             obj.db.getScriptTree()
             .then(tree => {
               vars.scriptTree = JSON.stringify(tree);
-              res.render(obj.VIEWS + 'user', vars);
+              res.render(obj.VIEWS + 'user', obj.noCache(vars));
             });
             return;
         } else if (req.query.include == 1) {
