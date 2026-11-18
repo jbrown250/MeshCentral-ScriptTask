@@ -3,8 +3,22 @@
     <script type="text/javascript" src="scripts/common-0.0.1.js"></script>
 </head>
 <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+    html, body {
+      height: 100%;
+      margin: 0;
+    }
     body {
       font-family: "Trebuchet MS", Arial, Helvetica, sans-serif;
+      padding: 6px 8px;
+      overflow: hidden; /* the panes below scroll individually */
+    }
+    #scriptTaskUser {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
     }
     #dropBlock {
       /*background-color: gray;
@@ -24,19 +38,21 @@
       color: #AAA;
     }
     #scripts_endpoints {
+      flex: 1 1 auto;
+      min-height: 0;   /* lets the flex child shrink so the panes can scroll */
+      display: flex;
       width: 100%;
-      height: 100%;
     }
     #scriptContainer {
-      width: 35%;
-      height: 100%;
-      float: left;
+      flex: 0 0 35%;
+      min-width: 0;
+      overflow: auto;
     }
     #infoContainer {
-      width: 65%;
-      height: 100%;
-      float: right;
-      border-left: 1px;
+      flex: 1 1 65%;
+      min-width: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
     }
     .lifolder {
       background: url(data:image/gif;base64,R0lGODlhEAAQAJEDAM2xV/Xur+XPgP///yH5BAEAAAMALAAAAAAQABAAAAJD3ISZIGHWUGihznesYDYATFVM+D2hJ4lgN1olxALAtAlmPCJvuMmJd6PJckDYwicrHhTD5o7plJmg0Uc0asNMkphHAQA7) no-repeat 16px;
@@ -56,6 +72,7 @@
       background-color: lightgray;
     }
     #controlBar {
+      flex: 0 0 auto;
       width: 100%;
       height: 20px;
       border-bottom: 1px solid black;
@@ -176,8 +193,10 @@
 <body onload="doOnLoad();">
 <div id="scriptTaskUser">
   <div id="dropBlock" style="display:none;"><b>&checkmark;</b></div>
-  Upload: <input type="file" id="files" name="files[]" multiple onchange="fileUpload();"/>
-  <hr />
+  <div style="flex: 0 0 auto;">
+    Upload: <input type="file" id="files" name="files[]" multiple onchange="fileUpload();"/>
+    <hr />
+  </div>
   <div id="controlBar">
     <span onclick="goNew();">New</span>
     <span onclick="goRename();">Rename</span>
@@ -262,9 +281,12 @@ function onlyUnique(value, index, self) {
     return self.indexOf(value) === index;
 }
 function resizeIframe() {
-    document.body.style.height = 0;
-    parent.pluginHandler.scripttask.resizeContent();
+    try { parent.pluginHandler.scripttask.resizeContent(); } catch (e) { }
 }
+// The tab is hidden when the page loads, so size the iframe again once it becomes visible
+// and whenever the browser window changes size.
+window.addEventListener('resize', resizeIframe);
+window.addEventListener('load', resizeIframe);
 function updateNodesTable() {
   let dRows = document.querySelectorAll('.stNodeRow');
   dRows.forEach((r) => {
@@ -457,7 +479,7 @@ function redrawScriptTree() {
   var str = '';
   var indent = 0;
   var folder_id = null;
-  str += '<div style="display: block;overflow-y: auto;max-height: 700px;">'
+  str += '<div style="display: block;">'
   scriptTree.forEach(function(f) {
     if (f.path != lastpath && f.type == 'folder') {
       indent = (f.path.match(/\//g) || []).length + 1;
