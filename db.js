@@ -21,12 +21,8 @@ module.exports.CreateDB = function(meshserver) {
         };
         
         obj.getDBVersion = function() {
-            return new Promise(function(resolve, reject) {
-                obj.scriptFile.find( { type: "db_version" } ).project( { _id: 0, version: 1 } ).toArray(function(err, vers){
-                    if (vers.length == 0) resolve(1);
-                    else resolve(vers[0]['version']);
-                });
-            });
+            return obj.scriptFile.find( { type: "db_version" } ).project( { _id: 0, version: 1 } ).toArray()
+            .then(vers => (vers.length == 0) ? 1 : vers[0]['version']);
         };
 
         obj.addScript = function(name, content, path, filetype) {
@@ -66,9 +62,9 @@ module.exports.CreateDB = function(meshserver) {
         
         obj.update = function(id, args) {
             id = formatId(id);
-            if (args.type == 'script' && args.content !== null) { 
+            if (args.type == 'script' && typeof args.content == 'string') {
                 if (args.filetype == 'bash') {
-                    args.content = args.content = split('\r\n').join('\n').split('\r').join('\n');
+                    args.content = args.content.split('\r\n').join('\n').split('\r').join('\n');
                 }
                 args.contentHash = require('crypto').createHash('sha384').update(args.content).digest('hex');
             }
@@ -89,8 +85,8 @@ module.exports.CreateDB = function(meshserver) {
           return obj.scriptFile.find( { type: { $in: [ 'script', 'folder' ] }, path: path }).toArray();
         };
         obj.get = function(id) {
-            if (id == null || id == 'null') return new Promise(function(resolve, reject) { resolve([]); });
-            id = formatId(id);
+            if (id == null || id == 'null') return Promise.resolve([]);
+            try { id = formatId(id); } catch (e) { return Promise.resolve([]); } // malformed id
             return obj.scriptFile.find( { _id: id } ).toArray();
         };
         obj.addJob = function(passedObj) {
@@ -113,13 +109,13 @@ module.exports.CreateDB = function(meshserver) {
           };
           var jObj = {...defaultObj, ...passedObj};
           
-          if (jObj.node == null || jObj.scriptId == null) { console.log('PLUGIN: SciptTask: Could not add job'); return false; }
+          if (jObj.node == null || jObj.scriptId == null) { console.log('PLUGIN: ScriptTask: Could not add job'); return Promise.resolve(null); }
           
           return obj.scriptFile.insertOne(jObj);
         };
         obj.addJobSchedule = function(schedObj) {
             schedObj.type = 'jobSchedule';
-            if (schedObj.node == null || schedObj.scriptId == null) { console.log('PLUGIN: SciptTask: Could not add job schedule'); return false; }
+            if (schedObj.node == null || schedObj.scriptId == null) { console.log('PLUGIN: ScriptTask: Could not add job schedule'); return Promise.resolve(null); }
             return obj.scriptFile.insertOne(schedObj);
         };
         obj.removeJobSchedule = function (id) {
@@ -129,15 +125,12 @@ module.exports.CreateDB = function(meshserver) {
             var nowTime = Math.floor(new Date() / 1000);
             var scheduleIdLimiter = {};
             if (scheduleId != null) {
-                scheduleIdLimiter._id = scheduleId;
+                try { scheduleIdLimiter._id = formatId(scheduleId); } catch (e) { return Promise.resolve([]); }
             }
+            // Note: schedules past their endAt are intentionally included so that
+            // determineNextJobTime() returns null and the schedule gets removed.
             return obj.scriptFile.find( { 
                 type: 'jobSchedule',
-                // startAt: { $gte: nowTime },
-                $or: [
-                    { endAt: null },
-                    { endAt: { $lte: nowTime } }
-                ],
                 $or: [
                     { nextRun: null }, 
                     { nextRun: { $lte: (nowTime + 60) } } // check a minute into the future
@@ -154,7 +147,7 @@ module.exports.CreateDB = function(meshserver) {
         };
         obj.getPendingJobs = function(nodeScope) {
           if (nodeScope == null || !Array.isArray(nodeScope)) {
-            return false;
+            return Promise.resolve([]);
           }
           // return jobs that has online nodes and queue time requirements have been met
           return obj.scriptFile.find( { 
@@ -166,7 +159,7 @@ module.exports.CreateDB = function(meshserver) {
                   { dontQueueUntil: null }, 
                   { dontQueueUntil: { $lte: Math.floor(new Date() / 1000) } }
               ]
-          }).toArray();
+          }).sort({ queueTime: 1 }).limit(5000).toArray();
         };
         obj.getJobNodeHistory = function(nodeId) {
             return obj.scriptFile.find( { 
@@ -198,7 +191,11 @@ module.exports.CreateDB = function(meshserver) {
         obj.deleteOldHistory = function() {
             var nowTime = Math.floor(new Date() / 1000);
             var oldTime = nowTime - (86400 * 90); // 90 days
-            return obj.scriptFile.deleteMany( { type: 'job', completeTime: { $lte: oldTime } } );
+            return obj.scriptFile.deleteMany( { type: 'job', completeTime: { $lte: oldTime } } )
+            .then(() => {
+                // jobs that were queued 90+ days ago and never ran (device gone, etc.)
+                return obj.scriptFile.deleteMany( { type: 'job', completeTime: null, queueTime: { $lte: oldTime } } );
+            });
         };
         obj.addVariable = function(name, scope, scopeTarget, value) {
             var vObj = { 
@@ -252,39 +249,40 @@ module.exports.CreateDB = function(meshserver) {
     };
     
     if (meshserver.args.mongodb) { // use MongDB
-      require('mongodb').MongoClient.connect(meshserver.args.mongodb, { useNewUrlParser: true, useUnifiedTopology: true }, function (err, client) {
-          if (err != null) { console.log("Unable to connect to database: " + err); process.exit(); return; }
-          
+      // Promise API: works with mongodb driver 3.x through 6.x (callbacks were removed in 5.x)
+      require('mongodb').MongoClient.connect(meshserver.args.mongodb)
+      .then(async function (client) {
           var dbname = 'meshcentral';
           if (meshserver.args.mongodbname) { dbname = meshserver.args.mongodbname; }
           const db = client.db(dbname);
-          
           obj.scriptFile = db.collection('plugin_scripttask');
-          obj.scriptFile.indexes(function (err, indexes) {
-              // Check if we need to reset indexes
+
+          var mongodb = require('mongodb');
+          formatId = function (id) {
+              if (id != null && typeof id == 'object') return id;
+              return (typeof mongodb.ObjectId == 'function') ? new mongodb.ObjectId(id) : mongodb.ObjectID(id);
+          };
+          obj.initFunctions();
+
+          try {
+              var indexes = await obj.scriptFile.indexes();
               var indexesByName = {}, indexCount = 0;
               for (var i in indexes) { indexesByName[indexes[i].name] = indexes[i]; indexCount++; }
-              if ((indexCount != 6) || (indexesByName['ScriptName1'] == null) || (indexesByName['ScriptPath1'] == null) || (indexesByName['JobTime1'] == null) || (indexesByName['JobNode1'] == null) || (indexesByName['JobScriptID1'] == null)) {
-                  // Reset all indexes
+              var wanted = ['ScriptName1', 'ScriptPath1', 'JobTime1', 'JobNode1', 'JobScriptID1', 'TypeComplete1', 'JobSchedule1'];
+              if ((indexCount != wanted.length + 1) || wanted.some(n => indexesByName[n] == null)) {
                   console.log('Resetting plugin (ScriptTask) indexes...');
-                  obj.scriptFile.dropIndexes(function (err) {
-                      obj.scriptFile.createIndex({ name: 1 }, { name: 'ScriptName1' });
-                      obj.scriptFile.createIndex({ path: 1 }, { name: 'ScriptPath1' });
-                      obj.scriptFile.createIndex({ queueTime: 1 }, { name: 'JobTime1' });
-                      obj.scriptFile.createIndex({ node: 1 }, { name: 'JobNode1' });
-                      obj.scriptFile.createIndex({ scriptId: 1 }, { name: 'JobScriptID1' });
-                  }); 
+                  await obj.scriptFile.dropIndexes();
+                  await obj.scriptFile.createIndex({ name: 1 }, { name: 'ScriptName1' });
+                  await obj.scriptFile.createIndex({ path: 1 }, { name: 'ScriptPath1' });
+                  await obj.scriptFile.createIndex({ queueTime: 1 }, { name: 'JobTime1' });
+                  await obj.scriptFile.createIndex({ node: 1 }, { name: 'JobNode1' });
+                  await obj.scriptFile.createIndex({ scriptId: 1 }, { name: 'JobScriptID1' });
+                  await obj.scriptFile.createIndex({ type: 1, completeTime: 1 }, { name: 'TypeComplete1' });
+                  await obj.scriptFile.createIndex({ jobSchedule: 1 }, { name: 'JobSchedule1' });
               }
-          });
-          
-          
-          if (typeof require('mongodb').ObjectID == 'function') {
-              formatId = require('mongodb').ObjectID;
-          } else {
-              formatId = require('mongodb').ObjectId;
-          }
-          obj.initFunctions();
-    });  
+          } catch (e) { console.log('PLUGIN: ScriptTask: Index check failed: ', e); }
+      })
+      .catch(function (err) { console.log('PLUGIN: ScriptTask: Unable to connect to database: ' + err); });
     } else { // use NeDb
         try { Datastore = require('@seald-io/nedb'); } catch (ex) { } // This is the NeDB with Node 23 support.
         if (Datastore == null) {
@@ -299,6 +297,8 @@ module.exports.CreateDB = function(meshserver) {
             obj.scriptFilex.ensureIndex({ fieldName: 'queueTime' });
             obj.scriptFilex.ensureIndex({ fieldName: 'node' });
             obj.scriptFilex.ensureIndex({ fieldName: 'scriptId' });
+            obj.scriptFilex.ensureIndex({ fieldName: 'type' });
+            obj.scriptFilex.ensureIndex({ fieldName: 'jobSchedule' });
         }
         obj.scriptFile = new NEMongo(obj.scriptFilex);
         formatId = function(id) { return id; };

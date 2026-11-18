@@ -19,10 +19,15 @@ class NEMongo {
         return this;
     }
     
+    // Returns a fresh cursor each time. Previously the sort/limit/projection state was stored on the
+    // shared instance and leaked into later queries (e.g. a history .limit(200) capping pending jobs).
     find(args, proj) {
-        this._find = args;
-        this._proj = proj;
-        return this;
+        var cursor = Object.create(this);
+        cursor._find = args;
+        cursor._proj = proj;
+        cursor._sort = null;
+        cursor._limit = null;
+        return cursor;
     }
     
     project(args) {
@@ -44,10 +49,12 @@ class NEMongo {
     toArray(callback) {
         var self = this; 
         return new Promise(function(resolve, reject) {
-            self.nedb.find( self._find, self._proj ).sort(self._sort).limit(self._limit).exec((err, docs) => {
+            var q = self.nedb.find( self._find || {}, self._proj || {} );
+            if (self._sort != null) q = q.sort(self._sort);
+            if (self._limit != null) q = q.limit(self._limit);
+            q.exec((err, docs) => {
               if (callback != null && typeof callback == 'function') callback(err, docs);
               if (err != null) reject(err);
-              if (callback != null && typeof callback == 'function') callback(err, docs);
               else resolve(docs);
             });
         });
@@ -57,7 +64,7 @@ class NEMongo {
         var self = this;
         return new Promise(function(resolve, reject) {
             self.nedb.insert(args, function(err, newDoc) { 
-                if (err) reject(err);
+                if (err) return reject(err);
                 newDoc.insertedId = newDoc._id;
                 resolve({ insertedId: newDoc._id });
             });
@@ -69,7 +76,7 @@ class NEMongo {
         self._find = filter;
         return new Promise(function(resolve, reject) {
             self.nedb.remove(self._find, { multi: false }, function(err, numRemoved) { 
-                if (err) reject(err);
+                if (err) return reject(err);
                 resolve( { deletedCount: numRemoved } );
             });
         });
@@ -80,7 +87,7 @@ class NEMongo {
         self._find = filter;
         return new Promise(function(resolve, reject) {
             self.nedb.remove(self._find, { multi: true }, function(err, numRemoved) { 
-                if (err) reject(err);
+                if (err) return reject(err);
                 resolve( { deletedCount: numRemoved } );
             });
         });
@@ -93,7 +100,7 @@ class NEMongo {
         if (options.upsert == null) options.upsert = false;
         return new Promise(function(resolve, reject) {
             self.nedb.update(self._find, update, { multi: false, upsert: options.upsert }, function(err, numAffected, affectedDoc) { 
-                if (err) reject(err);
+                if (err) return reject(err);
                 var retObj = { matchedCount: numAffected, modifiedCount: numAffected };
                 if (affectedDoc != null) retObj.upsertedId = affectedDoc._id;
                 resolve(retObj);
@@ -108,9 +115,9 @@ class NEMongo {
         if (options.upsert == null) options.upsert = false;
         return new Promise(function(resolve, reject) {
             self.nedb.update(self._find, update, { multi: true, upsert: options.upsert }, function(err, numAffected, affectedDocs) { 
-                if (err) reject(err);
+                if (err) return reject(err);
                 var retObj = { matchedCount: numAffected, modifiedCount: numAffected };
-                if (affectedDocs != null) retObj.upsertedId = affectedDocs[0]._id;
+                if (affectedDocs != null && affectedDocs[0] != null) retObj.upsertedId = affectedDocs[0]._id;
                 resolve(retObj);
             });
         });
