@@ -3,7 +3,14 @@
 A script running plugin for the [MeshCentral2](https://github.com/Ylianst/MeshCentral) Project. The plugin supports PowerShell, BAT, and Bash scripts. Windows, MacOS, and Linux endpoints are all supported. PowerShell can be run on any OS that has PowerShell installed, not just Windows.
 
 ## About this fork
-Maintained fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanblenis/MeshCentral-ScriptTask), which is no longer updated. 0.1.x fixes scripts being run repeatedly, temp files piling up in the MeshAgent folder, and long-running scripts losing their status. It also makes the tab fill the browser window. See [changelog.md](changelog.md) for details.
+Community fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanblenis/MeshCentral-ScriptTask), which is no longer updated. 0.1.x fixes scripts being run repeatedly, temp files piling up in the MeshAgent folder, and long-running scripts losing their status. It also adds folder organisation (drag and drop, Move, ordering), export/import of scripts as an editable zip, a full-window tab, and upgrades from the Plugins page without restarting MeshCentral. See [changelog.md](changelog.md) for details.
+
+**How this fork was made and tested.** The 0.1.x changes were written with AI assistance (Claude) and reviewed by the maintainer. Testing:
+- Automated tests ran against the real plugin code on **NeDB**: job dispatch and de-duplication, a simulated MeshAgent, the script tree UI in Chromium, export/import round trips, and in-place upgrades.
+- The **MongoDB** code was reviewed but not covered by automated tests. It is in day-to-day use on the maintainer's MongoDB server.
+- The agent side has been used on **Windows** endpoints. Linux and macOS agents use the same code paths but have had less real-world use.
+
+Use at your own risk. If you hit a problem, please open an issue and say whether you use MongoDB or NeDB and which agent OS.
 
 ## Export / Import
 - **Export** (toolbar) downloads `scripttask-export-<date>.zip` with every script as a normal file, in folders matching the script tree. Characters Windows can't use in file names are replaced with `_`; the real names are kept in `scripttask-export.json`, so leave that file in the zip.

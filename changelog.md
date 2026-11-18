@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
+## [Unreleased]
+### Changed
+- README: notes on how this fork was made and tested (NeDB covered by automated tests; MongoDB and non-Windows agents less so).
+
 ## [0.1.3] - 2026-11-18
 ### Added
 - **Export** downloads all scripts as a zip: one plain `.ps1` / `.bat` / `.sh` file per script, in folders matching the tree, plus `scripttask-export.json` (ids, real names, order). Edit the files offline in any editor.
