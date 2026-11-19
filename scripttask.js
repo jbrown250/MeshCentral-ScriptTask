@@ -77,16 +77,29 @@ module.exports.scripttask = function (parent) {
         var ids = Object.keys(users).filter(id => obj.isAdmin(users[id]));
         return ids.length ? ids : ['scripttask-no-admins-online'];
     };
-    obj.canRunOn = function(myparent, nodeid) {
+    // Runners: users who aren't full administrators but have "remote command" rights on a device. They may run
+    // scripts there and see their own runs; everything else is administrator-only.
+    obj.RUNNER_ACTIONS = { runScript: true, loadNodeHistory: true, loadScriptHistory: true };
+    obj.canUserRunOn = function(user, domain, nodeid) {
         return new Promise(resolve => {
             var ws = obj.meshServer.webserver;
-            if (typeof nodeid != 'string' || ws == null || typeof ws.GetNodeWithRights != 'function') return resolve(false);
+            if (user == null || typeof nodeid != 'string' || ws == null || typeof ws.GetNodeWithRights != 'function') return resolve(false);
             try {
-                ws.GetNodeWithRights(myparent.domain, myparent.user, nodeid, function(node, rights) {
+                ws.GetNodeWithRights(domain || null, user, nodeid, function(node, rights) {
                     resolve(node != null && (((rights >>> 0) === 0xFFFFFFFF) || ((rights & obj.MESHRIGHT_REMOTECOMMAND) != 0)));
                 });
             } catch (e) { resolve(false); }
         });
+    };
+    obj.canRunOn = function(myparent, nodeid) { return obj.canUserRunOn(myparent.user, myparent.domain, nodeid); };
+    // Runners who have the ScriptTask page open (so they get script-tree updates). userId -> expiry
+    obj.treeWatchers = {};
+    obj.addWatcher = function(userId) { obj.treeWatchers[userId] = Date.now() + 12 * 3600 * 1000; };
+    obj.isWatcher = function(userId) { var t = obj.treeWatchers[userId]; if (t && t > Date.now()) return true; delete obj.treeWatchers[userId]; return false; };
+    obj.treeTargets = function() {
+        var t = obj.adminTargets().filter(x => x != 'scripttask-no-admins-online');
+        Object.keys(obj.treeWatchers).forEach(u => { if (obj.isWatcher(u) && t.indexOf(u) == -1) t.push(u); });
+        return t.length ? t : ['scripttask-no-admins-online'];
     };
     obj.allowedNodes = async function(myparent, nodes) {
         var list = Array.isArray(nodes) ? nodes : (nodes != null ? [nodes] : []);
@@ -105,12 +118,22 @@ module.exports.scripttask = function (parent) {
     };
     
     obj.onDeviceRefreshEnd = function() {
-        if (typeof userinfo == 'undefined' || userinfo == null || ((userinfo.siteadmin >>> 0) !== 0xFFFFFFFF)) return; // administrators only
+        // Shown to full administrators, and to users with the "remote command" right on this device (runners).
+        var isAdmin = (typeof userinfo != 'undefined') && userinfo != null && ((userinfo.siteadmin >>> 0) === 0xFFFFFFFF);
+        var canRun = false;
+        try { var r = GetNodeRights(currentNode); canRun = ((r >>> 0) === 0xFFFFFFFF) || ((r & 0x00020000) != 0); } catch (e) { }
+        if (!isAdmin && !canRun) {
+            // tabs persist between devices: remove ours if this device isn't allowed
+            var h = document.getElementById('p19ph-pluginScriptTask'); if (h) h.parentNode.removeChild(h);
+            var pg = document.getElementById('pluginScriptTask'); if (pg) pg.parentNode.removeChild(pg);
+            return;
+        }
         pluginHandler.registerPluginTab({
             tabTitle: 'ScriptTask',
             tabId: 'pluginScriptTask'
         });
-        QA('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: 600px; border: 0; display: block" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1" />');
+        var nodeQ = (typeof currentNode != 'undefined' && currentNode != null) ? '&node=' + encodeURIComponent(currentNode._id) : '';
+        QH('pluginScriptTask', '<iframe id="pluginIframeScriptTask" style="width: 100%; height: 600px; border: 0; display: block" frameBorder=0 src="/pluginadmin.ashx?pin=scripttask&user=1' + nodeQ + '" />');
         if (!window.scriptTaskResizeHooked) {
             window.scriptTaskResizeHooked = true;
             window.addEventListener('resize', function() { pluginHandler.scripttask.resizeContent(); });
@@ -181,6 +204,16 @@ module.exports.scripttask = function (parent) {
                     delete obj.dispatched[String(job._id)];
                     continue;
                 }
+                // Re-check the launcher's rights now (they may have been removed while the job waited for the device).
+                if (job.runById) {
+                    var launcher = (obj.meshServer.webserver.users || {})[job.runById];
+                    if (!(await obj.canUserRunOn(launcher, null, job.node))) {
+                        await obj.db.update(job._id, { dispatchTime: nowTime, completeTime: nowTime, errorVal: 'Not run: ' + (job.runBy || job.runById) + ' no longer has remote command rights on this device.' });
+                        delete obj.dispatched[String(job._id)];
+                        obj.updateFrontEnd({ scriptId: job.scriptId, nodeId: job.node, runById: job.runById });
+                        continue;
+                    }
+                }
                 var replaceVars = await obj.buildReplaceVars(script, job, agent);
                 var dispatchTime = job.dispatchTime || nowTime; // keep the original dispatch time on re-sends
                 // record BEFORE sending so a concurrent path can't send it again
@@ -197,7 +230,7 @@ module.exports.scripttask = function (parent) {
                 }));
                 if (job.dispatchTime == null) {
                     await obj.db.update(job._id, { dispatchTime: dispatchTime });
-                    obj.updateFrontEnd({ scriptId: job.scriptId, nodeId: job.node });
+                    obj.updateFrontEnd({ scriptId: job.scriptId, nodeId: job.node, runById: job.runById });
                 }
             } catch (e) {
                 console.log('PLUGIN: ScriptTask: Could not dispatch job.', e);
@@ -248,50 +281,47 @@ module.exports.scripttask = function (parent) {
         });
     };
     
+    // ids: { scriptId, nodeId, tree, variables, runById (the job's launcher), forUser (a runner asking for their view) }
     obj.updateFrontEnd = async function(ids){
-        if (ids.scriptId != null) {
-            var scriptHistory = null;
-            obj.db.getJobScriptHistory(ids.scriptId)
-            .then((sh) => {
-                scriptHistory = sh;
-                return obj.db.getJobSchedulesForScript(ids.scriptId);
-            })
-            .then((scriptSchedule) => {
-                var targets = obj.adminTargets();
-                obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'historyData', scriptId: ids.scriptId, nodeId: null, scriptHistory: scriptHistory, nodeHistory: null, scriptSchedule: scriptSchedule });
-            });
-        }
-        if (ids.nodeId != null) {
-            var nodeHistory = null;
-            obj.db.getJobNodeHistory(ids.nodeId)
-            .then((nh) => {
-                nodeHistory = nh;
-                return obj.db.getJobSchedulesForNode(ids.nodeId);
-            })
-            .then((nodeSchedule) => {
-                var targets = obj.adminTargets();
-                obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'historyData', scriptId: null, nodeId: ids.nodeId, scriptHistory: null, nodeHistory: nodeHistory, nodeSchedule: nodeSchedule });
-            });
-        }
-        if (ids.tree === true) {
-            obj.db.getScriptTree()
-            .then((tree) => {
-                var targets = obj.adminTargets();
-                obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'newScriptTree', tree: tree });
-            });
-        }
-        if (ids.variables === true) {
-            obj.db.getVariables()
-            .then((vars) => {
-                var targets = obj.adminTargets();
-                obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'variableData', vars: vars });
-            });
-        }
+        var users = (obj.meshServer.webserver && obj.meshServer.webserver.users) || {};
+        var runnerIds = [];
+        [ids.runById, ids.forUser].forEach(u => { if (u && users[u] && !obj.isAdmin(users[u]) && runnerIds.indexOf(u) == -1) runnerIds.push(u); });
+        var send = function(targets, ev) { obj.meshServer.DispatchEvent(targets, obj, Object.assign({ nolog: true, action: 'plugin', plugin: 'scripttask' }, ev)); };
+        try {
+            if (ids.scriptId != null) {
+                if (!ids.forUser || obj.isAdmin(users[ids.forUser])) {
+                    var sh = await obj.db.getJobScriptHistory(ids.scriptId);
+                    var ss = await obj.db.getJobSchedulesForScript(ids.scriptId);
+                    send(obj.adminTargets(), { pluginaction: 'historyData', scriptId: ids.scriptId, nodeId: null, scriptHistory: sh, nodeHistory: null, scriptSchedule: ss });
+                }
+                for (const u of runnerIds) {
+                    var shu = await obj.db.getJobScriptHistory(ids.scriptId, u);
+                    send([u], { pluginaction: 'historyData', scriptId: ids.scriptId, nodeId: null, scriptHistory: shu, nodeHistory: null, scriptSchedule: [] });
+                }
+            }
+            if (ids.nodeId != null) {
+                if (!ids.forUser || obj.isAdmin(users[ids.forUser])) {
+                    var nh = await obj.db.getJobNodeHistory(ids.nodeId);
+                    var ns = await obj.db.getJobSchedulesForNode(ids.nodeId);
+                    send(obj.adminTargets(), { pluginaction: 'historyData', scriptId: null, nodeId: ids.nodeId, scriptHistory: null, nodeHistory: nh, nodeSchedule: ns });
+                }
+                for (const u of runnerIds) {
+                    var nhu = await obj.db.getJobNodeHistory(ids.nodeId, u);
+                    send([u], { pluginaction: 'historyData', scriptId: null, nodeId: ids.nodeId, scriptHistory: null, nodeHistory: nhu, nodeSchedule: [] });
+                }
+            }
+            if (ids.tree === true) {
+                send(obj.treeTargets(), { pluginaction: 'newScriptTree', tree: await obj.db.getScriptTree() });
+            }
+            if (ids.variables === true) {
+                send(obj.adminTargets(), { pluginaction: 'variableData', vars: await obj.db.getVariables() });
+            }
+        } catch (e) { console.log('PLUGIN: ScriptTask: Error updating the browser view: ', e); }
     };
-    
+
     obj.handleAdminReq = function(req, res, user) {
         if (req.query.include == 1) return obj.sendInclude(req, res); // static CSS/JS for the date picker only
-        if (!obj.isAdmin(user)) { res.sendStatus(401); return; }      // everything else: full administrators only
+        if (!obj.isAdmin(user)) return obj.handleRunnerReq(req, res, user);
         if (req.query.admin == 1) {
             res.render(obj.VIEWS + 'admin', obj.noCache({}));
             return;
@@ -308,6 +338,7 @@ module.exports.scripttask = function (parent) {
                         res.render(obj.VIEWS + 'procedit', obj.noCache(vars));
                     } else {
                         vars.scriptData = JSON.stringify(scripts[0]);
+                        vars.readOnly = 'false';
                         res.render(obj.VIEWS + 'scriptedit', obj.noCache(vars));
                     }
                 });
@@ -319,6 +350,7 @@ module.exports.scripttask = function (parent) {
             }
             if (req.query.export == 1) return obj.exportScripts(req, res);
             // default user view (tree)
+            vars.isAdmin = 'true';
             vars.scriptTree = 'null';
             obj.db.getScriptTree()
             .then(tree => {
@@ -329,6 +361,32 @@ module.exports.scripttask = function (parent) {
         }
         res.sendStatus(401); 
         return;
+    };
+
+    // Non-administrators: only the read-only runner view, and only for a device they have remote command rights on.
+    obj.handleRunnerReq = function(req, res, user) {
+        if (req.query.user != 1) { res.sendStatus(401); return; }
+        var deny = () => res.sendStatus(401);
+        if (req.query.export == 1 || req.query.schedule == 1 || req.query.admin == 1) return deny();
+        if (req.query.dl != null || req.query.edit == 1) {
+            // view/download script content: allowed once they've opened ScriptTask on a device they can run on
+            if (!obj.isWatcher(user._id)) return deny();
+            if (req.query.dl != null) return obj.downloadFile(req, res, user);
+            if (req.query.id == null) return deny();
+            return obj.db.get(req.query.id).then(found => {
+                if (found.length == 0 || found[0].type != 'script') return res.sendStatus(404);
+                res.render(obj.VIEWS + 'scriptedit', obj.noCache({ scriptData: JSON.stringify(found[0]), readOnly: 'true' }));
+            }).catch(deny);
+        }
+        obj.canUserRunOn(user, null, String(req.query.node || ''))
+        .then(ok => {
+            if (!ok) return deny();
+            obj.addWatcher(user._id);
+            return obj.db.getScriptTree().then(tree => {
+                res.render(obj.VIEWS + 'user', obj.noCache({ scriptTree: JSON.stringify(tree), isAdmin: 'false' }));
+            });
+        })
+        .catch(deny);
     };
 
     obj.sendInclude = function(req, res) {
@@ -684,7 +742,7 @@ module.exports.scripttask = function (parent) {
                 if (incomplete.length > 0) continue;
                 var scripts = await obj.db.get(s.scriptId);
                 if (scripts.length == 0) { await obj.db.removeJobSchedule(s._id); continue; } // script deleted
-                await obj.db.addJob({ scriptId: s.scriptId, scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, dontQueueUntil: nextJobTime, jobSchedule: s._id });
+                await obj.db.addJob({ scriptId: s.scriptId, scriptName: scripts[0].name, node: s.node, runBy: s.scheduledBy, runById: s.scheduledById || null, dontQueueUntil: nextJobTime, jobSchedule: s._id });
                 await obj.db.update(s._id, { nextRun: nextJobTime });
                 obj.updateFrontEnd({ scriptId: s.scriptId, nodeId: s.node });
             } catch (e) {
@@ -782,7 +840,7 @@ module.exports.scripttask = function (parent) {
                 return;
             }
         } else {
-            if (!obj.isAdmin(myparent.user)) {
+            if (!obj.isAdmin(myparent.user) && !obj.RUNNER_ACTIONS[command.pluginaction]) {
                 console.log('PLUGIN: ScriptTask: Rejected "' + command.pluginaction + '" from non-administrator ' + myparent.user._id);
                 return;
             }
@@ -881,6 +939,7 @@ module.exports.scripttask = function (parent) {
                     scriptId: scriptId, 
                     node: s, 
                     scheduledBy: myparent.user.name,
+                    scheduledById: myparent.user._id,
                     recur: command.recur, // [once, minutes, hourly, daily, weekly, monthly]
                     interval: x,
                     daysOfWeek: x, // only used for weekly recur val
@@ -899,6 +958,7 @@ module.exports.scripttask = function (parent) {
                     scriptId: String(command.scriptId), 
                     node: null, 
                     scheduledBy: myparent.user.name,
+                    scheduledById: myparent.user._id,
                     recur: sj.recur,
                     interval: sj.interval,
                     daysOfWeek: sj.dayVals,
@@ -925,11 +985,11 @@ module.exports.scripttask = function (parent) {
               .then(found => {
                   if (found.length == 0 || found[0].type != 'script') throw new Error('Script not found');
                   return obj.allowedNodes(myparent, command.nodes)
-                  .then(nodes => Promise.all(nodes.map(n => obj.db.addJob({ scriptId: String(scriptId), scriptName: found[0].name, node: n, runBy: myparent.user.name }))));
+                  .then(nodes => Promise.all(nodes.map(n => obj.db.addJob({ scriptId: String(scriptId), scriptName: found[0].name, node: n, runBy: myparent.user.name, runById: myparent.user._id }))));
               })
               .then(() => {
                   obj.queueRun();
-                  obj.updateFrontEnd( { scriptId: scriptId, nodeId: command.currentNodeId } );
+                  obj.updateFrontEnd( { scriptId: scriptId, nodeId: command.currentNodeId, runById: myparent.user._id } );
               })
               .catch(e => { console.log('PLUGIN: ScriptTask: Error queueing script run: ', e.message || e); });
             break;
@@ -976,16 +1036,16 @@ module.exports.scripttask = function (parent) {
                         .then(() => obj.makeJobsFromSchedules(job.jobSchedule));
                     })
                     .then(() => {
-                        obj.updateFrontEnd( { scriptId: job.scriptId, nodeId: job.node } );
+                        obj.updateFrontEnd( { scriptId: job.scriptId, nodeId: job.node, runById: job.runById } );
                     });
                 })
                 .catch(e => { console.log('PLUGIN: ScriptTask: Failed to complete job. ', e); });
             break;
             case 'loadNodeHistory':
-                obj.updateFrontEnd( { nodeId: command.nodeId } );
+                obj.updateFrontEnd( { nodeId: command.nodeId, forUser: myparent.user._id } );
             break;
             case 'loadScriptHistory':
-                obj.updateFrontEnd( { scriptId: command.scriptId } );
+                obj.updateFrontEnd( { scriptId: command.scriptId, forUser: myparent.user._id } );
             break;
             case 'editScript':
                 obj.db.get(command.scriptId)

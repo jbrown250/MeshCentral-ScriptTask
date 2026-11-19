@@ -169,17 +169,16 @@ module.exports.CreateDB = function(meshserver) {
               ]
           }).sort({ queueTime: 1 }).limit(5000).toArray();
         };
-        obj.getJobNodeHistory = function(nodeId) {
-            return obj.scriptFile.find( { 
-                type: 'job', 
-                node: nodeId,
-            }).sort({ queueTime: -1 }).limit(200).toArray();
+        // runById (optional): only jobs launched by that user (what a non-administrator sees)
+        obj.getJobNodeHistory = function(nodeId, runById) {
+            var q = { type: 'job', node: nodeId };
+            if (runById != null) q.runById = runById;
+            return obj.scriptFile.find(q).sort({ queueTime: -1 }).limit(200).toArray();
         };
-        obj.getJobScriptHistory = function(scriptId) {
-            return obj.scriptFile.find( { 
-                type: 'job', 
-                scriptId: scriptId,
-            }).sort({ completeTime: -1, queueTime: -1 }).limit(200).toArray();
+        obj.getJobScriptHistory = function(scriptId, runById) {
+            var q = { type: 'job', scriptId: String(scriptId) };
+            if (runById != null) q.runById = runById;
+            return obj.scriptFile.find(q).sort({ completeTime: -1, queueTime: -1 }).limit(200).toArray();
         };
         obj.updateScriptJobName = function(scriptId, scriptName) {
             return obj.scriptFile.updateMany({ type: 'job', scriptId: scriptId }, { $set: { scriptName: scriptName } });    

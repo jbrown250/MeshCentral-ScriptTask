@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
+## [Unreleased]
+### Added
+- **Runners.** Users who aren't full administrators can run scripts on devices where they have MeshCentral's **remote command** right:
+  - The ScriptTask tab appears only on those devices.
+  - The toolbar shows **View** (read-only editor), **Download** and **Run**.
+  - Their history shows only the runs they started.
+  - They can't schedule, edit, add, rename, move, delete, import/export, or see variables. The server enforces all of this, not just the page.
+- **Run on Selected** in Advanced Run: run the selected script now on the ticked devices. Previously it could only be scheduled.
+### Security
+- Rights are re-checked when a queued job is sent to the device. If the launcher, or whoever created a schedule, has lost remote command rights in the meantime, the job is closed with an error instead of running.
+- New jobs record the launcher's user id (`runById`), and new schedules record `scheduledById`. History filtering and the re-check use these ids, not the display name.
+### Fixed
+- Switching between devices appended another ScriptTask frame each time; the frame is now replaced.
+
 ## [0.1.5] - 2026-11-19
 ### Security
 - **HTTP: one administrator check for every page.** The old `?admin=1` branch kept the original check, which admitted only users whose rights were exactly "server backup", not full administrators. That page was an empty placeholder, but it now uses the same full-administrator check as everything else. Static date-picker files (`?include=1`) are limited to `.css`/`.js` under `includes/`, with no path traversal.

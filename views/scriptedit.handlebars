@@ -47,14 +47,22 @@
 </body>
 <script type="text/javascript">
 var scriptData = {{{scriptData}}};
+var readOnly = ({{{readOnly}}} === true); // non-administrators can view but not save
 
 function doOnLoad() {
     //QH('scriptContent', scriptData.content);
     Q('scriptContent').value = scriptData.content;
     Q('scriptName').value = scriptData.name;
+    if (readOnly) {
+        Q('scriptContent').readOnly = true;
+        Q('scriptName').readOnly = true;
+        var b = document.querySelector('#controlBar button'); if (b) b.style.display = 'none';
+        document.title = 'View: ' + scriptData.name;
+    }
 }
 
 function goSave() {
+    if (readOnly) return;
     scriptData.content = Q('scriptContent').value;
     scriptData.name = Q('scriptName').value;
     window.opener.callback(scriptData);

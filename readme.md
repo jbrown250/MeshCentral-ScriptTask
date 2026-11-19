@@ -13,9 +13,17 @@ Community fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanble
 Use at your own risk. If you hit a problem, please open an issue and say whether you use MongoDB or NeDB and which agent OS.
 
 ## Permissions
-- ScriptTask is for **full MeshCentral administrators** only. Other users don't see the tab, and the server rejects their requests.
-- Running or scheduling a script on a device also requires the **remote command** right on that device.
-- Devices (agents) can only fetch scripts for jobs queued for them and report results.
+| | Runner (has **remote command** on the device) | Full administrator |
+|---|---|---|
+| See the script list, view and download scripts | ✓ (read-only) | ✓ |
+| Run a script on a device | ✓ (devices with remote command only) | ✓ (devices with remote command only) |
+| History | their own runs | all runs |
+| Schedule; add, edit, rename, move, delete; import/export; variables | – | ✓ |
+
+- The ScriptTask tab only appears on devices where you have remote command rights (administrators see it everywhere).
+- Rights are checked when a job is queued **and** again when it is sent to the device.
+- Users with neither role don't see the tab, and the server rejects their requests.
+- Devices (agents) can only fetch scripts for jobs queued for them, and report results.
 
 ## Releasing (maintainers)
 `sh release.sh 0.1.5` sets `version` and the tag-pinned `downloadUrl` in `config.json`, dates the `[Unreleased]` changelog entry, commits and tags. Then `git push origin master --tags` and use **Upgrade** in MeshCentral.

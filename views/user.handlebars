@@ -211,23 +211,23 @@
 <body onload="doOnLoad();">
 <div id="scriptTaskUser">
   <div id="dropBlock" style="display:none;"><b>&checkmark;</b></div>
-  <div style="flex: 0 0 auto;">
+  <div style="flex: 0 0 auto;" class="stAdminOnly">
     Upload: <input type="file" id="files" name="files[]" multiple onchange="fileUpload();"/>
     <hr />
   </div>
   <div id="controlBar">
-    <span onclick="goNew();">New</span>
-    <span onclick="goRename();">Rename</span>
-    <span onclick="goEdit();">Edit</span>
-    <span onclick="goDelete();">Delete</span>
-    <span onclick="goNewFolder();">New Folder</span>
+    <span onclick="goNew();" class="stAdminOnly">New</span>
+    <span onclick="goRename();" class="stAdminOnly">Rename</span>
+    <span onclick="goEdit();" id="stEditBtn">Edit</span>
+    <span onclick="goDelete();" class="stAdminOnly">Delete</span>
+    <span onclick="goNewFolder();" class="stAdminOnly">New Folder</span>
     <span onclick="goDownload();">Download</span>
     <span onclick="goRun();">Run</span>
-    <span onclick="goMoveTo();" title="Move the selected script or folder to another folder">Move</span>
-    <span onclick="goMoveStep(-1);" title="Move up">&#9650;</span>
-    <span onclick="goMoveStep(1);" title="Move down">&#9660;</span>
-    <span onclick="goExport();" title="Download all scripts as a zip you can edit offline">Export</span>
-    <span onclick="goImport();" title="Import a zip: updates matching scripts, adds new ones, deletes nothing">Import</span>
+    <span onclick="goMoveTo();" class="stAdminOnly" title="Move the selected script or folder to another folder">Move</span>
+    <span onclick="goMoveStep(-1);" class="stAdminOnly" title="Move up">&#9650;</span>
+    <span onclick="goMoveStep(1);" class="stAdminOnly" title="Move down">&#9660;</span>
+    <span onclick="goExport();" class="stAdminOnly" title="Download all scripts as a zip you can edit offline">Export</span>
+    <span onclick="goImport();" class="stAdminOnly" title="Import a zip: updates matching scripts, adds new ones, deletes nothing">Import</span>
     <input type="file" id="stImportFile" accept=".zip,application/zip" style="display:none" onchange="importFileChosen(this);" />
   </div>
   <div id="scripts_endpoints">
@@ -237,7 +237,7 @@
       <div id="history">
           <div class="infoBar">Advanced Run</div>
           <div id="multiRun" class="infoContent">
-              <div style="padding-top: 15px;"><button onclick="goAdvancedRun();">Schedule on Selected</button></div>
+              <div style="padding-top: 15px;"><button onclick="goRunSelected();" title="Run the selected script now on the ticked devices">Run on Selected</button> <button onclick="goAdvancedRun();" class="stAdminOnly">Schedule on Selected</button></div>
               <div class="tblFloat">
                   <table id="mRunTbl" cellspacing="0" cellpadding="0">
                       <tr><td><label><input type="checkbox" onclick="selAllNodes(this);"> Select All</label></td></tr>
@@ -254,13 +254,13 @@
                   </table>
               </div>
           </div>
-          <div class="infoBar">Node Schedules</div>
+          <div class="infoBar stAdminOnly">Node Schedules</div>
           <div id="nSch" class="infoContent">
               <table id="nSchTbl" cellspacing="0" cellpadding="0">
                   <th>Script</th><th>Author</th><th>Every</th><th>Starting</th><th>Ending</th><th>Last Run</th><th>Next Run</th><th>Action</th>
               </table>
           </div>
-          <div class="infoBar">Script Schedules</div>
+          <div class="infoBar stAdminOnly">Script Schedules</div>
           <div id="sSch" class="infoContent">
               <table id="sSchTbl" cellspacing="0" cellpadding="0">
                   <th>Node</th><th>Author</th><th>Every</th><th>Starting</th><th>Ending</th><th>Last Run</th><th>Next Run</th><th>Action</th>
@@ -278,7 +278,7 @@
                 <th>Time</th><th>Run By</th><th>Node</th><th>Status</th><th>Return Value</th>
             </table>
         </div>
-        <div class="infoBar">Variables</div>
+        <div class="infoBar stAdminOnly">Variables</div>
         <div id="variables" class="infoContent">
             <table id="varTbl" cellspacing="0" cellpadding="0">
                 <th>Variable Name</th><th>Value</th><th>Scope</th><th>Scope Target</th><th>Action</th>
@@ -294,6 +294,8 @@
 </body>
 <script type="text/javascript">
 var scriptTree = {{{scriptTree}}};
+// Full administrators manage scripts; other users (with "remote command" rights on this device) can only run them.
+var stIsAdmin = ({{{isAdmin}}} === true);
 var elementDragged = false;
 var dragCounter = 0;
 var draggedId = null;
@@ -381,12 +383,30 @@ function selAllNodes(el) {
   return true;
 }
 
+function applyRunnerMode() {
+  if (stIsAdmin) return;
+  document.querySelectorAll('.stAdminOnly').forEach(function (el) { el.style.display = 'none'; });
+  var e = document.getElementById('stEditBtn'); if (e) { e.innerHTML = 'View'; e.style.borderLeft = 'none'; } // first visible button: no divider
+  // the panel after a hidden header must stay hidden too
+  document.querySelectorAll('.infoBar.stAdminOnly').forEach(function (h) { if (h.nextElementSibling) h.nextElementSibling.style.display = 'none'; });
+}
+// Run the selected script now on the ticked devices (the server only queues devices you have remote command rights on)
+function goRunSelected() {
+  var sel = [];
+  document.getElementsByName("runOn[]").forEach(function (n) { if (n.checked) sel.push(n.value); });
+  if (sel.length == 0) { parent.setDialogMode(2, "Oops!", 1, null, 'No machines have been selected.'); return; }
+  var it = selectedItem();
+  if (it == null || it.type != 'script') { parent.setDialogMode(2, "Oops!", 1, null, 'Please select a script.'); return; }
+  parent.meshserver.send({ 'action': 'plugin', 'plugin': 'scripttask', 'pluginaction': 'runScript', 'scriptId': it._id, 'nodes': sel, 'currentNodeId': parent.currentNode._id });
+  parent.setDialogMode(2, "Run", 1, null, 'Queued "' + escHtml(it.name) + '" on ' + sel.length + ' device(s). Devices you don\'t have remote command rights on are skipped.');
+}
 function doOnLoad() {
+  applyRunnerMode();
   redrawScriptTree();
   selectPreviouslySelectedScript();
   updateNodesTable();
   parent.meshserver.send({ 'action': 'plugin', 'plugin': 'scripttask', 'pluginaction': 'loadNodeHistory', 'nodeId': parent.currentNode._id });
-  parent.meshserver.send({ 'action': 'plugin', 'plugin': 'scripttask', 'pluginaction': 'loadVariables', 'nodeId': parent.currentNode._id });  
+  if (stIsAdmin) parent.meshserver.send({ 'action': 'plugin', 'plugin': 'scripttask', 'pluginaction': 'loadVariables', 'nodeId': parent.currentNode._id });  
 }
 
 function selectPreviouslySelectedScript() {
@@ -547,6 +567,7 @@ function redrawScriptTree() {
   str += '</div>';
   document.getElementById('scriptContainer').innerHTML = str;
   document.querySelectorAll('.liscript, .lifolder').forEach(function(el) {
+    if (!stIsAdmin) { el.setAttribute('draggable', 'false'); return; }
     el.addEventListener('dragstart', treeDragStart);
     el.addEventListener('dragend', treeDragEnd);
     el.addEventListener('dragover', treeDragOver);
@@ -1168,7 +1189,7 @@ function goMoveTo() {
   }
   function handleFileSelect(evt) {
     evt.preventDefault();
-    if (internalDrag != null || !isFileDrag(evt)) return;
+    if (!stIsAdmin || internalDrag != null || !isFileDrag(evt)) return;
     var files = evt.dataTransfer.files; // FileList object
     // files is a FileList of File objects. List some properties.
     QV('dropBlock', false);
@@ -1202,7 +1223,7 @@ function goMoveTo() {
   var dragTimer = null;
   function isFileDrag(e) { try { return Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1; } catch (ex) { return false; } }
   function allowDrag(e) {
-      if (!elementDragged && internalDrag == null && isFileDrag(e)) {  // only show the upload overlay for files from the desktop
+      if (stIsAdmin && !elementDragged && internalDrag == null && isFileDrag(e)) {  // only show the upload overlay for files from the desktop
           e.dataTransfer.dropEffect = 'copy';
           QV('dropBlock', true);
           e.preventDefault();
