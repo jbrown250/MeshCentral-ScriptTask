@@ -1,14 +1,14 @@
 {
   "name": "ScriptTask",
   "shortName": "scripttask",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "author": "Ryan Blenis",
   "description": "Script (PowerShell, BAT, Bash) runner for endpoints",
   "hasAdminPanel": false,
   "homepage": "https://github.com/jbrown250/MeshCentral-ScriptTask",
   "changelogUrl": "https://raw.githubusercontent.com/jbrown250/MeshCentral-ScriptTask/master/changelog.md",
   "configUrl": "https://raw.githubusercontent.com/jbrown250/MeshCentral-ScriptTask/master/config.json",
-  "downloadUrl": "https://github.com/jbrown250/MeshCentral-ScriptTask/archive/refs/tags/0.1.6.zip",
+  "downloadUrl": "https://github.com/jbrown250/MeshCentral-ScriptTask/archive/refs/tags/0.1.7.zip",
   "repository": {
     "type": "git",
     "url": "https://github.com/jbrown250/MeshCentral-ScriptTask.git"

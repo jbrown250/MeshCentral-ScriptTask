@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
-## [Unreleased]
+## [0.1.7] - 2026-11-19
 ### Security
 - **Viewing and downloading scripts re-checks rights on every request.** The page sends the device it's open for, and the server checks the runner's remote command right on it each time. Previously a 12-hour pass from opening the page was enough, so a runner whose rights were removed could keep reading scripts for up to 12 hours. The pass now only controls who receives script-list updates (names).
 - **Runner history respects current rights.** A device's history is only returned if the runner still has remote command on it. Script history only lists runs on devices they still have rights on. Runners only ever saw their own runs; now they also lose access to past results when their rights are removed.
