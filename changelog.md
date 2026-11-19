@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
+## [Unreleased]
+### Fixed
+- **Upgrade kept reinstalling the same version (0.1.4–0.1.7).** MeshCentral's Upgrade downloads from the `downloadUrl` saved for the *installed* version. These releases pinned that URL to their own tag, so Upgrade fetched the installed version again. `downloadUrl` now always points at the `release` branch, which `release.sh` moves to each new release. Servers on 0.1.4–0.1.7 must remove the plugin and add it again once (scripts, schedules and history are kept); after that, Upgrade works.
+
 ## [0.1.7] - 2026-11-19
 ### Security
 - **Viewing and downloading scripts re-checks rights on every request.** The page sends the device it's open for, and the server checks the runner's remote command right on it each time. Previously a 12-hour pass from opening the page was enough, so a runner whose rights were removed could keep reading scripts for up to 12 hours. The pass now only controls who receives script-list updates (names).

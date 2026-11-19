@@ -27,7 +27,9 @@ Use at your own risk. If you hit a problem, please open an issue and say whether
 - Devices (agents) can only fetch scripts for jobs queued for them, and report results.
 
 ## Releasing (maintainers)
-`sh release.sh 0.1.5` sets `version` and the tag-pinned `downloadUrl` in `config.json`, dates the `[Unreleased]` changelog entry, commits and tags. Then `git push origin master --tags` and use **Upgrade** in MeshCentral.
+`sh release.sh 0.1.9` sets `version` in `config.json`, dates the `[Unreleased]` changelog entry, commits, tags, and moves the `release` branch to the new tag. Then `git push origin master release --tags` and use **Upgrade** in MeshCentral.
+
+MeshCentral installs from the `release` branch (`downloadUrl`), so commits on `master` are never installed until they're released. Don't change `downloadUrl`: MeshCentral's Upgrade uses the URL saved for the *installed* version.
 
 ## Export / Import
 - **Export** (toolbar) downloads `scripttask-export-<date>.zip` with every script as a normal file, in folders matching the script tree. Characters Windows can't use in file names are replaced with `_`; the real names are kept in `scripttask-export.json`, so leave that file in the zip.
