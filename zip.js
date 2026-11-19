@@ -70,16 +70,21 @@ function readZip(buf, limits) {
         if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
     }
     if (eocd < 0) throw new Error('Not a zip file');
-    var count = buf.readUInt16LE(eocd + 10), cdOffset = buf.readUInt32LE(eocd + 16);
+    var count = buf.readUInt16LE(eocd + 10), cdSize = buf.readUInt32LE(eocd + 12), cdOffset = buf.readUInt32LE(eocd + 16);
     if (count === 0xFFFF || cdOffset === 0xFFFFFFFF) throw new Error('ZIP64 archives are not supported');
     if (count > maxEntries) throw new Error('Too many files in zip (' + count + ')');
+    if (cdOffset + cdSize > eocd) throw new Error('Corrupt zip: central directory out of bounds');
+    var need = function (pos, len) { if (pos < 0 || pos + len > buf.length) throw new Error('Corrupt zip: data out of bounds'); };
     var out = [], p = cdOffset, total = 0;
     for (var n = 0; n < count; n++) {
+        need(p, 46);
         if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error('Corrupt zip central directory');
         var flags = buf.readUInt16LE(p + 8), method = buf.readUInt16LE(p + 10);
         var csize = buf.readUInt32LE(p + 20), usize = buf.readUInt32LE(p + 24);
         var nlen = buf.readUInt16LE(p + 28), xlen = buf.readUInt16LE(p + 30), clen = buf.readUInt16LE(p + 32);
         var lho = buf.readUInt32LE(p + 42);
+        need(p + 46, nlen + xlen + clen);
+        if (lho >= cdOffset) throw new Error('Corrupt zip: entry offset out of bounds');
         var nameBuf = buf.slice(p + 46, p + 46 + nlen);
         var name = nameBuf.toString((flags & 0x0800) ? 'utf8' : 'latin1').replace(/\\/g, '/');
         p += 46 + nlen + xlen + clen;
@@ -88,8 +93,11 @@ function readZip(buf, limits) {
         if (flags & 0x1) { out.push({ name: name, isDir: false, data: null, error: 'encrypted' }); continue; }
         if (usize > maxFile) { out.push({ name: name, isDir: false, data: null, error: 'too large' }); continue; }
         total += usize; if (total > maxTotal) throw new Error('Zip contents too large');
+        need(lho, 30);
         if (buf.readUInt32LE(lho) !== 0x04034b50) throw new Error('Corrupt zip local header');
         var start = lho + 30 + buf.readUInt16LE(lho + 26) + buf.readUInt16LE(lho + 28);
+        if (start + csize > cdOffset) throw new Error('Corrupt zip: entry data out of bounds');
+        if (method === 0 && csize !== usize) throw new Error('Corrupt zip: stored entry size mismatch');
         var comp = buf.slice(start, start + csize);
         var data;
         if (method === 0) data = comp;

@@ -46,7 +46,7 @@ function dbg(str) {
     if (debug_flag !== true) return;
     try {
         var fs = require('fs');
-        var logStream = fs.createWriteStream(joinPath(getWorkDir(), 'scripttask.txt'), { 'flags': 'a' });
+        var logStream = fs.createWriteStream(joinPath(workDirCache || agentDir() || '.', 'scripttask.txt'), { 'flags': 'a' });
         logStream.write('\n' + new Date().toLocaleString() + ': ' + str);
         logStream.end('\n');
     } catch (e) { }
@@ -91,44 +91,67 @@ function runShellSync(lines) {
 
 // Scripts can contain credentials: only SYSTEM/Administrators (Windows) or root (Linux/macOS) may read the work folder.
 // Windows: Program Files sub-folders are readable by all users by default, so replace the inherited ACL.
+function shQ(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
 function lockDownDir(dir) {
     if (process.platform == 'win32') {
         // SIDs, not names, so this works on non-English Windows. (OI)(CI) applies to files created inside.
-        var r = runShellSync(['icacls "' + dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F']);
-        dbg('icacls: ' + r);
+        dbg('icacls: ' + runShellSync(['icacls "' + dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F']));
     } else {
-        runShellSync(["chmod 700 '" + dir.replace(/'/g, "'\\''") + "'"]);
+        runShellSync(['chmod 700 ' + shQ(dir)]);
     }
 }
 
-// A dedicated folder for temp files.
+// Check the EFFECTIVE permissions rather than trusting that the lock-down command worked.
+//  Windows: inheritance disabled and every access rule is for SYSTEM (S-1-5-18) or Administrators (S-1-5-32-544).
+//  Unix: mode 700 and owned by the agent's user.
+function isPrivateDir(dir) {
+    var out;
+    if (process.platform == 'win32') {
+        var lit = dir.replace(/'/g, "''");
+        out = runShellSync([process.env['windir'] + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -Command "' +
+            "$a = Get-Acl -LiteralPath '" + lit + "'; " +
+            "$bad = @($a.Access | Where-Object { $s = $_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; ($s -ne 'S-1-5-18') -and ($s -ne 'S-1-5-32-544') }); " +
+            "if ($a.AreAccessRulesProtected -and $bad.Count -eq 0) { 'STACL:' + 'OK' } else { 'STACL:' + 'BAD' }" + '"']);
+    } else {
+        out = runShellSync(['[ "$(stat -c \'%a %u\' ' + shQ(dir) + ' 2>/dev/null || stat -f \'%Lp %u\' ' + shQ(dir) + ')" = "700 $(id -u)" ] && echo STACL:OK || echo STACL:BAD']);
+    }
+    var ok = (out.indexOf('STACL:OK') !== -1);
+    if (!ok) dbg('Permission check failed for ' + dir + ': ' + out);
+    return ok;
+}
+
+// A dedicated, private folder for temp files. Fails CLOSED: returns null (jobs are refused) rather than
+// writing scripts somewhere other users could read them.
+var workDirFailedAt = 0;
 function getWorkDir() {
     if (workDirCache != null) return workDirCache;
+    if (workDirFailedAt && (now() - workDirFailedAt) < 600) return null; // don't retry the checks on every job
     var fs = require('fs');
     var candidates = [];
     var ad = agentDir();
     if (ad != null) candidates.push(joinPath(ad, 'scripttask'));
     if (process.platform != 'win32') candidates.push('/usr/local/mesh_services/meshagent/scripttask', '/usr/local/mesh/scripttask');
-    for (var i = 0; i < candidates.length; i++) {
-        var c = candidates[i];
+    var tryDir = function (c) {
         try {
             if (!fs.existsSync(c)) fs.mkdirSync(c);
-            if (fs.existsSync(c)) {
-                lockDownDir(c);
-                // make sure the agent can still write here after the lock-down
-                var probe = joinPath(c, 'st-probe.tmp');
-                fs.writeFileSync(probe, 'ok');
-                fs.unlinkSync(probe);
-                workDirCache = c; break;
-            }
-        } catch (e) { dbg('Could not use work dir ' + c + ': ' + e); }
-    }
+            if (!fs.existsSync(c)) return false;
+            lockDownDir(c);
+            if (!isPrivateDir(c)) return false;
+            var probe = joinPath(c, 'st-probe.tmp'); // and the agent can still write here
+            fs.writeFileSync(probe, 'ok');
+            fs.unlinkSync(probe);
+            return true;
+        } catch (e) { dbg('Could not use work dir ' + c + ': ' + e); return false; }
+    };
+    for (var i = 0; i < candidates.length && workDirCache == null; i++) { if (tryDir(candidates[i])) workDirCache = candidates[i]; }
     if (workDirCache == null && process.platform != 'win32') {
-        // Last resort: a new private directory from mktemp (safe in world-writable /tmp, unlike a fixed name).
+        // Last resort: a fresh directory from mktemp (safe in world-writable /tmp, unlike a fixed name).
         var t = runShellSync(['umask 077; mktemp -d /var/tmp/scripttask.XXXXXXXX 2>/dev/null || mktemp -d /tmp/scripttask.XXXXXXXX']).trim().split('\n').pop();
-        if (t && t.charAt(0) == '/' && fs.existsSync(t)) workDirCache = t;
+        if (t && t.charAt(0) == '/' && tryDir(t)) workDirCache = t;
     }
-    if (workDirCache == null) workDirCache = (ad != null) ? ad : '.';
+    if (workDirCache == null) { workDirFailedAt = now(); dbg('No private work folder available; script jobs will be refused.'); return null; }
+    workDirFailedAt = 0;
     dbg('Work dir is ' + workDirCache);
     return workDirCache;
 }
@@ -149,7 +172,9 @@ function sweepStaleFiles(force) {
     var active = {};
     for (var j in running) { var fl = running[j].files || []; for (var k = 0; k < fl.length; k++) active[fl[k]] = true; }
 
-    var dirs = [getWorkDir()];
+    var dirs = [];
+    var wd = getWorkDir();
+    if (wd != null) dirs.push(wd);
     var ad = agentDir();
     if (ad != null && dirs.indexOf(ad) === -1) dirs.push(ad); // legacy location (pre 0.1.0 wrote here)
     if (process.platform != 'win32') {
@@ -269,10 +294,10 @@ function consoleaction(args, rights, sessionid, parent) {
             return 'Remembered job state has been cleared';
         case 'cleanup':
             sweepStaleFiles(true);
-            return 'Leftover temporary files removed from ' + getWorkDir();
+            return (getWorkDir() == null) ? 'Leftover temporary files removed. WARNING: no private work folder could be set up, so script jobs are being refused (see the debug log).' : ('Leftover temporary files removed from ' + getWorkDir());
         case 'debug':
             debug_flag = !debug_flag;
-            return 'Debugging is now ' + (debug_flag ? 'on' : 'off') + ' (log: ' + joinPath(getWorkDir(), 'scripttask.txt') + ')';
+            return 'Debugging is now ' + (debug_flag ? 'on' : 'off') + ' (log: ' + joinPath(workDirCache || agentDir() || '.', 'scripttask.txt') + ')';
         case 'getPendingJobs':
         case 'status':
             var out = [];
@@ -351,6 +376,11 @@ function applyVars(content, replaceVars) {
 
 function runScript(sObj, jObj) {
     if (running[jObj.jobId] != null) { dbg('Job ' + jObj.jobId + ' already running. Skipping.'); return; }
+    if (getWorkDir() == null) {
+        // fail closed: never write the script somewhere other users could read it
+        finalizeJob(jObj, null, 'Not run: ScriptTask could not set up a private work folder on this device (only SYSTEM/Administrators or root may access it). Run "plugin scripttask debug" then "plugin scripttask cleanup" in the agent console for details.');
+        return;
+    }
 
     // work on a copy so cached script / other jobs aren't affected by variable replacement
     var script = { _id: sObj._id, filetype: sObj.filetype, content: applyVars(String(sObj.content || ''), jObj.replaceVars) };

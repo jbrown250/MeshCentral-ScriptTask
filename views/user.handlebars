@@ -644,7 +644,7 @@ function importFileChosen(input) {
 }
 function confirmImport() {
   if (pendingImport == null) return;
-  parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'importScripts', fileName: pendingImport.fileName, data: pendingImport.data, apply: true });
+  parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'importScripts', fileName: pendingImport.fileName, data: pendingImport.data, apply: true, token: pendingImport.token });
   pendingImport = null;
 }
 function importSummaryHtml(r, applied) {
@@ -663,6 +663,7 @@ parent.pluginHandler.scripttask.importResult = function (message) {
   if (ev.error) { pendingImport = null; parent.setDialogMode(2, "Import failed", 1, null, escHtml(ev.error)); return; }
   var r = ev.result;
   if (!ev.apply) {
+    if (pendingImport) pendingImport.token = r.token; // the server checks nothing changed before applying
     if (r.updated.length + r.created.length + r.foldersCreated.length == 0) {
       pendingImport = null;
       parent.setDialogMode(2, 'Import ' + escHtml(ev.fileName || ''), 1, null, importSummaryHtml(r, false).replace('Nothing is deleted.', 'Nothing to import.'));

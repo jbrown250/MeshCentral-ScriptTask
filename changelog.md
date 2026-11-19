@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
+## [Unreleased]
+### Security
+- **HTTP: one administrator check for every page.** The old `?admin=1` branch kept the original check, which admitted only users whose rights were exactly "server backup", not full administrators. That page was an empty placeholder, but it now uses the same full-administrator check as everything else. Static date-picker files (`?include=1`) are limited to `.css`/`.js` under `includes/`, with no path traversal.
+- **Agent work folder fails closed.** After locking the folder down, the agent now checks the effective permissions. On Windows: inheritance off, and only the SYSTEM and Administrators SIDs. On Unix: mode 700 and owned by the agent's user. If no private folder can be set up, jobs are refused with a clear error, and the script is never written to disk. Previously it fell back to the agent folder. `plugin scripttask cleanup` reports the problem.
+- **Import is checked again at apply time.** The preview returns a fingerprint of the scripts it was based on, including ones it called unchanged. Confirming re-runs the preview, and nothing is written if anything changed in between. An ID match whose script was moved or renamed on the server since the export is now flagged as a conflict.
+- **ZIP reader bounds checks** for every offset and length (fuzzed with 20,000 corrupted archives: every one parsed or was rejected with an error).
+### Fixed
+- Turning on agent debug logging before the work folder existed could recurse endlessly.
+
 ## [0.1.4] - 2026-11-19
 ### Security
 - **Permissions are now enforced by the plugin.** MeshCentral only checks that the sender is logged in, so previously any logged-in user could read, change and run any script on any device, as SYSTEM. Now:

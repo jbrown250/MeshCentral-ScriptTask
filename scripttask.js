@@ -290,18 +290,12 @@ module.exports.scripttask = function (parent) {
     };
     
     obj.handleAdminReq = function(req, res, user) {
-        if ((user.siteadmin & 0xFFFFFFFF) == 1 && req.query.admin == 1) 
-        {
-            // admin wants admin, grant
-            var vars = {};
-            res.render(obj.VIEWS + 'admin', obj.noCache(vars));
-            return;
-        } else if (req.query.admin == 1 && (user.siteadmin & 0xFFFFFFFF) == 0) {
-            // regular user wants admin
-            res.sendStatus(401); 
+        if (req.query.include == 1) return obj.sendInclude(req, res); // static CSS/JS for the date picker only
+        if (!obj.isAdmin(user)) { res.sendStatus(401); return; }      // everything else: full administrators only
+        if (req.query.admin == 1) {
+            res.render(obj.VIEWS + 'admin', obj.noCache({}));
             return;
         } else if (req.query.user == 1) { 
-            if (!obj.isAdmin(user)) { res.sendStatus(401); return; } // ScriptTask is administrators only
             if (req.query.dl != null) return obj.downloadFile(req, res, user);
             var vars = {};
             
@@ -332,16 +326,18 @@ module.exports.scripttask = function (parent) {
               res.render(obj.VIEWS + 'user', obj.noCache(vars));
             });
             return;
-        } else if (req.query.include == 1) {
-            switch (req.query.path.split('/').pop().split('.').pop()) {
-                case 'css':     res.contentType('text/css'); break;
-                case 'js':      res.contentType('text/javascript'); break;
-            }
-            res.sendFile(__dirname + '/includes/' + req.query.path); // don't freak out. Express covers any path issues.
-            return;
         }
         res.sendStatus(401); 
         return;
+    };
+
+    obj.sendInclude = function(req, res) {
+        var rel = String(req.query.path || '');
+        // only plain files under includes/, no traversal
+        if (!/^[A-Za-z0-9._\/-]+$/.test(rel) || rel.split('/').some(p => p == '..' || p == '')) { res.sendStatus(404); return; }
+        var ext = rel.split('.').pop().toLowerCase();
+        if (ext == 'css') res.contentType('text/css'); else if (ext == 'js') res.contentType('text/javascript'); else { res.sendStatus(404); return; }
+        res.sendFile(__dirname + '/includes/' + rel);
     };
     
     // ---- Export / import -----------------------------------------------------------------------
@@ -406,6 +402,7 @@ module.exports.scripttask = function (parent) {
     // apply=false is a dry run: nothing is written, the result describes what would happen.
     obj.importZip = async function (buf, apply) {
         var result = { created: [], updated: [], unchanged: 0, foldersCreated: [], skipped: [], conflicts: [], applied: !!apply };
+        var plan = []; // what would be touched and the server state it was based on -> result.token
         var entries = require(__dirname + '/zip.js').readZip(buf, { maxEntries: 2000, maxFileSize: 2 * 1024 * 1024, maxTotal: 20 * 1024 * 1024 });
         // normalise paths; drop anything trying to escape with ".."
         entries = entries.filter(e => {
@@ -497,14 +494,17 @@ module.exports.scripttask = function (parent) {
             }
             if (existing) {
                 var changed = (existing.content || '') !== content || existing.name !== name || existing.path !== path || existing.filetype !== ftype;
-                if (!changed) { result.unchanged++; continue; }
+                if (!changed) { result.unchanged++; plan.push(['n', String(existing._id), existing.contentHash || '']); continue; }
                 var label = path + '/' + name;
                 var was = existing.path + '/' + existing.name;
                 if (was !== label) label += '  (was ' + was + ')';
                 // Changed on the server since this export was made? Importing would overwrite that work.
                 if (ms && ms.hash && existing.contentHash && ms.hash !== existing.contentHash && (existing.content || '') !== content) {
-                    result.conflicts.push(path + '/' + name);
+                    result.conflicts.push(path + '/' + name + '  (content changed on the server since the export)');
+                } else if (ms && ms.id && String(existing._id) === String(ms.id) && ((ms.path != null && ms.path !== existing.path) || (ms.name != null && ms.name !== existing.name))) {
+                    result.conflicts.push(path + '/' + name + '  (moved or renamed on the server since the export; was ' + ms.path + '/' + ms.name + ' when exported, now ' + existing.path + '/' + existing.name + ')');
                 }
+                plan.push(['u', String(existing._id), existing.contentHash || '', existing.path, existing.name]);
                 if (apply) {
                     await obj.db.update(existing._id, { type: 'script', filetype: ftype, name: name, path: path, content: content });
                     if (existing.name !== name) await obj.db.updateScriptJobName(String(existing._id), name);
@@ -512,6 +512,7 @@ module.exports.scripttask = function (parent) {
                 existing.content = content; existing.name = name; existing.path = path; existing.filetype = ftype;
                 result.updated.push(label);
             } else {
+                plan.push(['c', path.toLowerCase(), name]);
                 var doc = { _id: null, type: 'script', name: name, path: path, filetype: ftype, content: content };
                 if (apply) {
                     var ins = await obj.db.addScript(name, content, path, ftype);
@@ -523,6 +524,8 @@ module.exports.scripttask = function (parent) {
                 result.created.push(path + '/' + name);
             }
         }
+        plan.push(['f'].concat(result.foldersCreated));
+        result.token = require('crypto').createHash('sha256').update(JSON.stringify(plan)).digest('hex');
         return result;
     };
 
@@ -1029,7 +1032,13 @@ module.exports.scripttask = function (parent) {
                 Promise.resolve()
                 .then(() => {
                     if (typeof command.data != 'string' || command.data.length > 14 * 1024 * 1024) throw new Error('Import file missing or too large (max 10 MB).');
-                    return obj.importZip(Buffer.from(command.data, 'base64'), apply);
+                    var buf = Buffer.from(command.data, 'base64');
+                    if (!apply) return obj.importZip(buf, false);
+                    // Final check: the scripts must still be exactly as they were when the preview was confirmed.
+                    return obj.importZip(buf, false).then(check => {
+                        if (typeof command.token != 'string' || check.token !== command.token) throw new Error('Scripts changed since the preview (or the preview was skipped). Nothing was imported - please import the file again to see a new preview.');
+                        return obj.importZip(buf, true);
+                    });
                 })
                 .then(result => {
                     if (apply) console.log('PLUGIN: ScriptTask: ' + myparent.user._id + ' imported ' + command.fileName + ': ' + result.updated.length + ' updated, ' + result.created.length + ' added.');
