@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
-## [Unreleased]
+## [0.1.5] - 2026-11-19
 ### Security
 - **HTTP: one administrator check for every page.** The old `?admin=1` branch kept the original check, which admitted only users whose rights were exactly "server backup", not full administrators. That page was an empty placeholder, but it now uses the same full-administrator check as everything else. Static date-picker files (`?include=1`) are limited to `.css`/`.js` under `includes/`, with no path traversal.
 - **Agent work folder fails closed.** After locking the folder down, the agent now checks the effective permissions. On Windows: inheritance off, and only the SYSTEM and Administrators SIDs. On Unix: mode 700 and owned by the agent's user. If no private folder can be set up, jobs are refused with a clear error, and the script is never written to disk. Previously it fell back to the agent folder. `plugin scripttask cleanup` reports the problem.
