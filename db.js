@@ -190,6 +190,11 @@ module.exports.CreateDB = function(meshserver) {
         obj.getJobSchedulesForNode = function (nodeId) {
             return obj.scriptFile.find( { type: 'jobSchedule', node: nodeId } ).toArray();
         };
+        obj.hasPendingJobForScript = function (node, scriptId) {
+            if (typeof node != 'string' || scriptId == null) return Promise.resolve(false);
+            return obj.scriptFile.find( { type: 'job', node: node, scriptId: String(scriptId), completeTime: null } ).limit(1).toArray()
+            .then(jobs => jobs.length > 0);
+        };
         obj.getIncompleteJobsForSchedule = function (schedId) {
             return obj.scriptFile.find( { type: 'job', jobSchedule: schedId, completeTime: null } ).toArray();
         };

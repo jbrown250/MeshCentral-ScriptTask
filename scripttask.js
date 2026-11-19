@@ -62,6 +62,42 @@ module.exports.scripttask = function (parent) {
     // Render plugin views without Express's view cache so an upgrade shows the new pages immediately.
     obj.noCache = function(vars) { vars = vars || {}; vars.cache = false; return vars; };
 
+    // ---- Authorization ---------------------------------------------------------------------------
+    // MeshCentral passes every 'plugin' command to serveraction() after only checking that the sender
+    // is logged in (users) or connected (agents). The plugin must enforce permissions itself.
+    //  - Everything ScriptTask does requires a full MeshCentral administrator.
+    //  - Running/scheduling on a device additionally requires the "remote command" right on it.
+    //  - Agents may only fetch scripts they have a pending job for, report results, and clear their own queue.
+    obj.SITERIGHT_ADMIN = 0xFFFFFFFF;
+    obj.MESHRIGHT_REMOTECOMMAND = 0x00020000;
+    obj.AGENT_ACTIONS = { getScript: true, jobComplete: true, clearAllPendingJobs: true };
+    obj.isAdmin = function(user) { return (user != null) && (typeof user.siteadmin == 'number') && ((user.siteadmin >>> 0) === obj.SITERIGHT_ADMIN); };
+    obj.adminTargets = function() {
+        var users = (obj.meshServer.webserver && obj.meshServer.webserver.users) || {};
+        var ids = Object.keys(users).filter(id => obj.isAdmin(users[id]));
+        return ids.length ? ids : ['scripttask-no-admins-online'];
+    };
+    obj.canRunOn = function(myparent, nodeid) {
+        return new Promise(resolve => {
+            var ws = obj.meshServer.webserver;
+            if (typeof nodeid != 'string' || ws == null || typeof ws.GetNodeWithRights != 'function') return resolve(false);
+            try {
+                ws.GetNodeWithRights(myparent.domain, myparent.user, nodeid, function(node, rights) {
+                    resolve(node != null && (((rights >>> 0) === 0xFFFFFFFF) || ((rights & obj.MESHRIGHT_REMOTECOMMAND) != 0)));
+                });
+            } catch (e) { resolve(false); }
+        });
+    };
+    obj.allowedNodes = async function(myparent, nodes) {
+        var list = Array.isArray(nodes) ? nodes : (nodes != null ? [nodes] : []);
+        var ok = [];
+        for (const n of list) {
+            if (await obj.canRunOn(myparent, n)) ok.push(n);
+            else console.log('PLUGIN: ScriptTask: ' + myparent.user._id + ' lacks remote command rights on ' + n + '; not queued.');
+        }
+        return ok;
+    };
+
     obj.server_startup = function() {
         obj.meshServer.pluginHandler.scripttask_db = require (__dirname + '/db.js').CreateDB(obj.meshServer);
         obj.db = obj.meshServer.pluginHandler.scripttask_db;
@@ -69,6 +105,7 @@ module.exports.scripttask = function (parent) {
     };
     
     obj.onDeviceRefreshEnd = function() {
+        if (typeof userinfo == 'undefined' || userinfo == null || ((userinfo.siteadmin >>> 0) !== 0xFFFFFFFF)) return; // administrators only
         pluginHandler.registerPluginTab({
             tabTitle: 'ScriptTask',
             tabId: 'pluginScriptTask'
@@ -220,7 +257,7 @@ module.exports.scripttask = function (parent) {
                 return obj.db.getJobSchedulesForScript(ids.scriptId);
             })
             .then((scriptSchedule) => {
-                var targets = ['*', 'server-users'];
+                var targets = obj.adminTargets();
                 obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'historyData', scriptId: ids.scriptId, nodeId: null, scriptHistory: scriptHistory, nodeHistory: null, scriptSchedule: scriptSchedule });
             });
         }
@@ -232,21 +269,21 @@ module.exports.scripttask = function (parent) {
                 return obj.db.getJobSchedulesForNode(ids.nodeId);
             })
             .then((nodeSchedule) => {
-                var targets = ['*', 'server-users'];
+                var targets = obj.adminTargets();
                 obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'historyData', scriptId: null, nodeId: ids.nodeId, scriptHistory: null, nodeHistory: nodeHistory, nodeSchedule: nodeSchedule });
             });
         }
         if (ids.tree === true) {
             obj.db.getScriptTree()
             .then((tree) => {
-                var targets = ['*', 'server-users'];
+                var targets = obj.adminTargets();
                 obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'newScriptTree', tree: tree });
             });
         }
         if (ids.variables === true) {
             obj.db.getVariables()
             .then((vars) => {
-                var targets = ['*', 'server-users'];
+                var targets = obj.adminTargets();
                 obj.meshServer.DispatchEvent(targets, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'variableData', vars: vars });
             });
         }
@@ -264,7 +301,7 @@ module.exports.scripttask = function (parent) {
             res.sendStatus(401); 
             return;
         } else if (req.query.user == 1) { 
-            // regular user wants regular access, grant
+            if (!obj.isAdmin(user)) { res.sendStatus(401); return; } // ScriptTask is administrators only
             if (req.query.dl != null) return obj.downloadFile(req, res, user);
             var vars = {};
             
@@ -347,7 +384,7 @@ module.exports.scripttask = function (parent) {
             var dir = zipDirOf[sc.path] || zipDirOf['Shared'] || 'Shared';
             var file = dir + '/' + unique(dir, obj.safeFileName(sc.name), obj.EXT_BY_TYPE[sc.filetype] || '.txt');
             entries.push({ name: file, data: sc.content || '' });
-            manifest.scripts.push({ file: file, id: String(sc._id), name: sc.name, filetype: sc.filetype, path: sc.path, sortOrder: (typeof sc.sortOrder == 'number') ? sc.sortOrder : null });
+            manifest.scripts.push({ file: file, id: String(sc._id), name: sc.name, filetype: sc.filetype, path: sc.path, hash: sc.contentHash || null, sortOrder: (typeof sc.sortOrder == 'number') ? sc.sortOrder : null });
         });
         entries.unshift({ name: obj.EXPORT_MANIFEST, data: JSON.stringify(manifest, null, 2) });
         return { zip: require(__dirname + '/zip.js').createZip(entries), count: manifest.scripts.length };
@@ -366,9 +403,10 @@ module.exports.scripttask = function (parent) {
         .catch(e => { console.log('PLUGIN: ScriptTask: Export failed: ', e); res.sendStatus(500); });
     };
 
-    obj.importZip = async function (buf, runBy) {
-        var result = { created: [], updated: [], unchanged: 0, foldersCreated: [], skipped: [] };
-        var entries = require(__dirname + '/zip.js').readZip(buf, { maxEntries: 10000, maxFileSize: 5 * 1024 * 1024, maxTotal: 200 * 1024 * 1024 });
+    // apply=false is a dry run: nothing is written, the result describes what would happen.
+    obj.importZip = async function (buf, apply) {
+        var result = { created: [], updated: [], unchanged: 0, foldersCreated: [], skipped: [], conflicts: [], applied: !!apply };
+        var entries = require(__dirname + '/zip.js').readZip(buf, { maxEntries: 2000, maxFileSize: 2 * 1024 * 1024, maxTotal: 20 * 1024 * 1024 });
         // normalise paths; drop anything trying to escape with ".."
         entries = entries.filter(e => {
             e.name = e.name.replace(/^\/+/, '');
@@ -417,10 +455,13 @@ module.exports.scripttask = function (parent) {
             for (var i = 1; i <= parts.length; i++) {
                 var pth = parts.slice(0, i).join('/');
                 if (folderByPath[pth.toLowerCase()]) continue;
-                var r = await obj.db.addFolder(parts[i - 1], pth);
-                var doc = { _id: r && r.insertedId, type: 'folder', name: parts[i - 1], path: pth };
+                var doc = { _id: null, type: 'folder', name: parts[i - 1], path: pth };
+                if (apply) {
+                    var r = await obj.db.addFolder(parts[i - 1], pth);
+                    doc._id = r && r.insertedId;
+                    if (i == parts.length && typeof sortOrder == 'number' && doc._id != null) await obj.db.update(doc._id, { sortOrder: sortOrder });
+                }
                 folderByPath[pth.toLowerCase()] = doc;
-                if (i == parts.length && typeof sortOrder == 'number' && doc._id != null) await obj.db.update(doc._id, { sortOrder: sortOrder });
                 result.foldersCreated.push(pth);
             }
             return folderByPath[path.toLowerCase()].path; // existing folder's exact casing
@@ -457,14 +498,26 @@ module.exports.scripttask = function (parent) {
             if (existing) {
                 var changed = (existing.content || '') !== content || existing.name !== name || existing.path !== path || existing.filetype !== ftype;
                 if (!changed) { result.unchanged++; continue; }
-                await obj.db.update(existing._id, { type: 'script', filetype: ftype, name: name, path: path, content: content });
-                if (existing.name !== name) await obj.db.updateScriptJobName(String(existing._id), name);
+                var label = path + '/' + name;
+                var was = existing.path + '/' + existing.name;
+                if (was !== label) label += '  (was ' + was + ')';
+                // Changed on the server since this export was made? Importing would overwrite that work.
+                if (ms && ms.hash && existing.contentHash && ms.hash !== existing.contentHash && (existing.content || '') !== content) {
+                    result.conflicts.push(path + '/' + name);
+                }
+                if (apply) {
+                    await obj.db.update(existing._id, { type: 'script', filetype: ftype, name: name, path: path, content: content });
+                    if (existing.name !== name) await obj.db.updateScriptJobName(String(existing._id), name);
+                }
                 existing.content = content; existing.name = name; existing.path = path; existing.filetype = ftype;
-                result.updated.push(path + '/' + name);
+                result.updated.push(label);
             } else {
-                var ins = await obj.db.addScript(name, content, path, ftype);
-                var doc = { _id: ins && ins.insertedId, type: 'script', name: name, path: path, filetype: ftype, content: content };
-                if (ms && typeof ms.sortOrder == 'number' && doc._id != null) await obj.db.update(doc._id, { sortOrder: ms.sortOrder });
+                var doc = { _id: null, type: 'script', name: name, path: path, filetype: ftype, content: content };
+                if (apply) {
+                    var ins = await obj.db.addScript(name, content, path, ftype);
+                    doc._id = ins && ins.insertedId;
+                    if (ms && typeof ms.sortOrder == 'number' && doc._id != null) await obj.db.update(doc._id, { sortOrder: ms.sortOrder });
+                }
                 all.push(doc);
                 if (doc._id != null) scriptById[String(doc._id)] = doc;
                 result.created.push(path + '/' + name);
@@ -718,6 +771,20 @@ module.exports.scripttask = function (parent) {
     };
 
     obj.serveraction = function(command, myparent, grandparent) {
+        if (command == null || typeof command.pluginaction != 'string' || myparent == null) return;
+        if (myparent.user == null) {
+            // From an agent: only the agent-side protocol is allowed.
+            if (!obj.AGENT_ACTIONS[command.pluginaction] || typeof myparent.dbNodeKey != 'string') {
+                console.log('PLUGIN: ScriptTask: Rejected "' + command.pluginaction + '" from agent ' + myparent.dbNodeKey);
+                return;
+            }
+        } else {
+            if (!obj.isAdmin(myparent.user)) {
+                console.log('PLUGIN: ScriptTask: Rejected "' + command.pluginaction + '" from non-administrator ' + myparent.user._id);
+                return;
+            }
+            if (obj.AGENT_ACTIONS[command.pluginaction]) return; // agent-only actions
+        }
         switch (command.pluginaction) {
             case 'addScript':
                 obj.db.addScript(command.name, command.content, command.path, command.filetype)
@@ -823,9 +890,10 @@ module.exports.scripttask = function (parent) {
                     type: "scheduledJob"
                 } */
                 var sj = command.schedule;
+                if (sj == null || typeof sj != 'object') { console.log('PLUGIN: ScriptTask: addScheduledJob without a schedule'); break; }
                 
                 var sched = {
-                    scriptId: command.scriptId, 
+                    scriptId: String(command.scriptId), 
                     node: null, 
                     scheduledBy: myparent.user.name,
                     recur: sj.recur,
@@ -837,52 +905,38 @@ module.exports.scripttask = function (parent) {
                     nextRun: null,
                     type: "jobSchedule"
                 };
-                var sel = command.nodes;
-                var proms = [];
-                if (Array.isArray(sel)) {
-                  sel.forEach((s) => {
-                    var sObj = {...sched, ...{
-                        node: s
-                    }};
-                    proms.push(obj.db.addJobSchedule( sObj ));
-                  });
-                } else if (sel != null) {
-                  proms.push(obj.db.addJobSchedule( {...sched, ...{ node: sel }} ));
-                }
-                Promise.all(proms)
-                .then(() => {
-                    obj.makeJobsFromSchedules();
-                    return Promise.resolve();
+                obj.allowedNodes(myparent, command.nodes)
+                .then(nodes => {
+                    return obj.db.get(command.scriptId).then(found => {
+                        if (found.length == 0 || found[0].type != 'script') throw new Error('Script not found');
+                        return Promise.all(nodes.map(n => obj.db.addJobSchedule({ ...sched, ...{ node: n } })));
+                    });
                 })
-                .catch(e => { console.log('PLUGIN: ScriptTask: Error adding schedules. The error was: ', e); });
+                .then(() => obj.makeJobsFromSchedules())
+                .then(() => obj.updateFrontEnd({ scriptId: command.scriptId, nodeId: command.currentNodeId }))
+                .catch(e => { console.log('PLUGIN: ScriptTask: Error adding schedules. The error was: ', e.message || e); });
             break;
             case 'runScript':
               var scriptId = command.scriptId;
-              var sel = command.nodes;
-              var proms = [];
-              if (Array.isArray(sel)) {
-                sel.forEach((s) => {
-                  proms.push(obj.db.addJob( { scriptId: scriptId, node: s, runBy: myparent.user.name } ));
-                });
-              } else {
-                proms.push(obj.db.addJob( { scriptId: scriptId, node: sel, runBy: myparent.user.name } ));
-              }
-              Promise.all(proms)
-              .then(() => {
-                  return obj.db.get(scriptId);
-              })
-              .then(scripts => {
-                  return obj.db.updateScriptJobName(scriptId, scripts[0].name);
+              obj.db.get(scriptId)
+              .then(found => {
+                  if (found.length == 0 || found[0].type != 'script') throw new Error('Script not found');
+                  return obj.allowedNodes(myparent, command.nodes)
+                  .then(nodes => Promise.all(nodes.map(n => obj.db.addJob({ scriptId: String(scriptId), scriptName: found[0].name, node: n, runBy: myparent.user.name }))));
               })
               .then(() => {
                   obj.queueRun();
                   obj.updateFrontEnd( { scriptId: scriptId, nodeId: command.currentNodeId } );
               })
-              .catch(e => { console.log('PLUGIN: ScriptTask: Error queueing script run: ', e); });
+              .catch(e => { console.log('PLUGIN: ScriptTask: Error queueing script run: ', e.message || e); });
             break;
             case 'getScript':
                 //obj.debug('ScriptTask', 'getScript Triggered', JSON.stringify(command));
-                obj.db.get(command.scriptId)
+                obj.db.hasPendingJobForScript(myparent.dbNodeKey, command.scriptId)
+                .then(pending => {
+                    if (!pending) { console.log('PLUGIN: ScriptTask: Agent ' + myparent.dbNodeKey + ' asked for a script it has no job for; ignored.'); return []; }
+                    return obj.db.get(command.scriptId);
+                })
                 .then(script => {
                     if (script.length == 0) return;
                     myparent.send(JSON.stringify({ 
@@ -967,21 +1021,26 @@ module.exports.scripttask = function (parent) {
                 })
             break;
             case 'importScripts':
-                var target = [command.userid || '*'];
+                var target = [myparent.user._id];
+                var apply = (command.apply === true);
+                var reply = function (extra) { obj.meshServer.DispatchEvent(target, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'importResult', fileName: command.fileName, apply: apply, ...extra }); };
+                if (obj.importBusy) { reply({ error: 'Another import is in progress. Try again in a moment.' }); break; }
+                obj.importBusy = true;
                 Promise.resolve()
                 .then(() => {
-                    if (typeof command.data != 'string' || command.data.length > 40 * 1024 * 1024) throw new Error('Import file missing or too large (max 30 MB).');
-                    return obj.importZip(Buffer.from(command.data, 'base64'), myparent.user ? myparent.user.name : null);
+                    if (typeof command.data != 'string' || command.data.length > 14 * 1024 * 1024) throw new Error('Import file missing or too large (max 10 MB).');
+                    return obj.importZip(Buffer.from(command.data, 'base64'), apply);
                 })
                 .then(result => {
-                    obj.meshServer.DispatchEvent(target, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'importResult', fileName: command.fileName, result: result });
-                    obj.updateFrontEnd({ tree: true });
+                    if (apply) console.log('PLUGIN: ScriptTask: ' + myparent.user._id + ' imported ' + command.fileName + ': ' + result.updated.length + ' updated, ' + result.created.length + ' added.');
+                    reply({ result: result });
+                    if (apply) obj.updateFrontEnd({ tree: true });
                 })
                 .catch(e => {
                     console.log('PLUGIN: ScriptTask: Import failed: ', e.message || e);
-                    obj.meshServer.DispatchEvent(target, obj, { nolog: true, action: 'plugin', plugin: 'scripttask', pluginaction: 'importResult', fileName: command.fileName, error: String(e.message || e) });
-                    obj.updateFrontEnd({ tree: true });
-                });
+                    reply({ error: String(e.message || e) });
+                })
+                .finally(() => { obj.importBusy = false; });
             break;
             case 'deleteVar':
                 obj.db.delete(command.id)

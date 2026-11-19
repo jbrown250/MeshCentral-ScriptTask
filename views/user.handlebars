@@ -625,30 +625,53 @@ function treeDrop(evt) {
 // toolbar: Export / Import
 function goExport() { window.location = '/pluginadmin.ashx?pin=scripttask&user=1&export=1'; }
 function goImport() { var f = document.getElementById('stImportFile'); f.value = ''; f.click(); }
+var pendingImport = null;
 function importFileChosen(input) {
   var file = input.files && input.files[0];
   if (!file) return;
   if (!/\.zip$/i.test(file.name)) { parent.setDialogMode(2, "Import", 1, null, 'Please choose a .zip file (use Export to create one).'); return; }
+  if (file.size > 10 * 1024 * 1024) { parent.setDialogMode(2, "Import", 1, null, 'That file is larger than the 10 MB import limit.'); return; }
   var reader = new FileReader();
   reader.onload = function () {
     var bytes = new Uint8Array(reader.result), bin = '', CH = 0x8000;
     for (var i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
-    parent.setDialogMode(2, "Import", 0, null, 'Importing ' + escHtml(file.name) + '&hellip;');
-    parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'importScripts', fileName: file.name, data: btoa(bin) });
+    pendingImport = { fileName: file.name, data: btoa(bin) };
+    parent.setDialogMode(2, "Import", 0, null, 'Checking ' + escHtml(file.name) + '&hellip;');
+    // step 1: dry run - the server reports what would change without changing anything
+    parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'importScripts', fileName: file.name, data: pendingImport.data, apply: false });
   };
   reader.readAsArrayBuffer(file);
 }
+function confirmImport() {
+  if (pendingImport == null) return;
+  parent.meshserver.send({ action: 'plugin', plugin: 'scripttask', pluginaction: 'importScripts', fileName: pendingImport.fileName, data: pendingImport.data, apply: true });
+  pendingImport = null;
+}
+function importSummaryHtml(r, applied) {
+  var list = function (title, arr, warn) {
+    if (!arr || !arr.length) return '';
+    return '<b' + (warn ? ' style="color:#b00"' : '') + '>' + title + ' (' + arr.length + ')</b><ul style="margin:2px 0 8px 0;padding-left:20px">' + arr.map(function (x) { return '<li>' + escHtml(x) + '</li>'; }).join('') + '</ul>';
+  };
+  var html = '<div style="max-height:350px;overflow:auto">';
+  html += list(applied ? 'Changed on the server since export (overwritten)' : 'Changed on the server since this export - will be OVERWRITTEN', r.conflicts, true);
+  html += list(applied ? 'Updated' : 'Will update', r.updated) + list(applied ? 'Added' : 'Will add', r.created) + list(applied ? 'New folders' : 'New folders', r.foldersCreated) + list('Skipped', r.skipped);
+  html += '<div>' + r.unchanged + ' unchanged. Nothing is deleted.</div></div>';
+  return html;
+}
 parent.pluginHandler.scripttask.importResult = function (message) {
   var ev = message.event || message;
-  if (ev.error) { parent.setDialogMode(2, "Import failed", 1, null, escHtml(ev.error)); return; }
-  var r = ev.result, html = '<div style="max-height:350px;overflow:auto">';
-  var list = function (title, arr) {
-    if (!arr || !arr.length) return '';
-    return '<b>' + title + ' (' + arr.length + ')</b><ul style="margin:2px 0 8px 0;padding-left:20px">' + arr.map(function (x) { return '<li>' + escHtml(x) + '</li>'; }).join('') + '</ul>';
-  };
-  html += list('Updated', r.updated) + list('Added', r.created) + list('New folders', r.foldersCreated) + list('Skipped', r.skipped);
-  html += '<div>' + r.unchanged + ' unchanged.</div></div>';
-  parent.setDialogMode(2, 'Imported ' + escHtml(ev.fileName || ''), 1, null, html);
+  if (ev.error) { pendingImport = null; parent.setDialogMode(2, "Import failed", 1, null, escHtml(ev.error)); return; }
+  var r = ev.result;
+  if (!ev.apply) {
+    if (r.updated.length + r.created.length + r.foldersCreated.length == 0) {
+      pendingImport = null;
+      parent.setDialogMode(2, 'Import ' + escHtml(ev.fileName || ''), 1, null, importSummaryHtml(r, false).replace('Nothing is deleted.', 'Nothing to import.'));
+      return;
+    }
+    parent.setDialogMode(2, 'Import ' + escHtml(ev.fileName || '') + '? (preview)', 3, confirmImport, importSummaryHtml(r, false) + '<div style="margin-top:6px">Press <b>OK</b> to import.</div>');
+    return;
+  }
+  parent.setDialogMode(2, 'Imported ' + escHtml(ev.fileName || ''), 1, null, importSummaryHtml(r, true));
 };
 
 // toolbar: Move / Up / Down

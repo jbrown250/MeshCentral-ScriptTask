@@ -31,7 +31,7 @@ var SCRIPT_KEY_PREFIX = 'pluginScriptTask_script_';
 var STATE_MAX_AGE = 14 * 86400;   // keep finished-job results for 14 days
 var STATE_MAX_ENTRIES = 500;      // hard cap on remembered jobs
 var SWEEP_INTERVAL = 3600;        // sweep leftover temp files at most hourly
-var TEMP_FILE_RX = /^st[0-9a-v]{6,}\.(ps1|bat|sh|txt)$/;
+var TEMP_FILE_RX = /^st[0-9a-v]{8,}\.(ps1|bat|sh|txt)$/; // only names this plugin generates (random base-32)
 
 var running = {};          // jobId -> { pid, files: [], started }
 var pendingDownload = {};  // jobId -> jObj  (waiting for script from server)
@@ -72,24 +72,61 @@ function agentDir() {
     return d;
 }
 
-// A dedicated folder for temp files. Falls back to legacy locations if it can't be created.
+// Run shell commands synchronously through stdin (avoids argument-quoting differences between agent builds).
+function runShellSync(lines) {
+    var out = '';
+    try {
+        var child = (process.platform == 'win32')
+            ? require('child_process').execFile(process.env['windir'] + '\\system32\\cmd.exe')
+            : require('child_process').execFile('/bin/sh', ['sh']);
+        child.stdout.on('data', function (c) { out += c; });
+        child.stderr.on('data', function (c) { out += c; });
+        var nl = (process.platform == 'win32') ? '\r\n' : '\n';
+        for (var i = 0; i < lines.length; i++) child.stdin.write(lines[i] + nl);
+        child.stdin.write('exit' + nl);
+        child.waitExit();
+    } catch (e) { out += String(e); }
+    return out;
+}
+
+// Scripts can contain credentials: only SYSTEM/Administrators (Windows) or root (Linux/macOS) may read the work folder.
+// Windows: Program Files sub-folders are readable by all users by default, so replace the inherited ACL.
+function lockDownDir(dir) {
+    if (process.platform == 'win32') {
+        // SIDs, not names, so this works on non-English Windows. (OI)(CI) applies to files created inside.
+        var r = runShellSync(['icacls "' + dir + '" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F']);
+        dbg('icacls: ' + r);
+    } else {
+        runShellSync(["chmod 700 '" + dir.replace(/'/g, "'\\''") + "'"]);
+    }
+}
+
+// A dedicated folder for temp files.
 function getWorkDir() {
     if (workDirCache != null) return workDirCache;
     var fs = require('fs');
     var candidates = [];
     var ad = agentDir();
     if (ad != null) candidates.push(joinPath(ad, 'scripttask'));
-    if (process.platform == 'win32') {
-        if (ad != null) candidates.push(ad);
-    } else {
-        candidates.push('/usr/local/mesh_services/meshagent/scripttask', '/usr/local/mesh/scripttask', '/var/tmp', '/tmp');
-    }
+    if (process.platform != 'win32') candidates.push('/usr/local/mesh_services/meshagent/scripttask', '/usr/local/mesh/scripttask');
     for (var i = 0; i < candidates.length; i++) {
         var c = candidates[i];
         try {
             if (!fs.existsSync(c)) fs.mkdirSync(c);
-            if (fs.existsSync(c)) { workDirCache = c; break; }
+            if (fs.existsSync(c)) {
+                lockDownDir(c);
+                // make sure the agent can still write here after the lock-down
+                var probe = joinPath(c, 'st-probe.tmp');
+                fs.writeFileSync(probe, 'ok');
+                fs.unlinkSync(probe);
+                workDirCache = c; break;
+            }
         } catch (e) { dbg('Could not use work dir ' + c + ': ' + e); }
+    }
+    if (workDirCache == null && process.platform != 'win32') {
+        // Last resort: a new private directory from mktemp (safe in world-writable /tmp, unlike a fixed name).
+        var t = runShellSync(['umask 077; mktemp -d /var/tmp/scripttask.XXXXXXXX 2>/dev/null || mktemp -d /tmp/scripttask.XXXXXXXX']).trim().split('\n').pop();
+        if (t && t.charAt(0) == '/' && fs.existsSync(t)) workDirCache = t;
     }
     if (workDirCache == null) workDirCache = (ad != null) ? ad : '.';
     dbg('Work dir is ' + workDirCache);

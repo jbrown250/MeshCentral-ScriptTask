@@ -6,9 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
-## [Unreleased]
+## [0.1.4] - 2026-11-19
+### Security
+- **Permissions are now enforced by the plugin.** MeshCentral only checks that the sender is logged in, so previously any logged-in user could read, change and run any script on any device, as SYSTEM. Now:
+  - Everything in ScriptTask requires a **full MeshCentral administrator**. The tab is hidden from other users, and the server refuses their requests.
+  - Running or scheduling a script on a device also requires the **remote command** right on that device.
+  - **Agents** can only fetch scripts they have a pending job for, report results, and clear their own queue. Previously a compromised device could edit scripts that then ran on other devices.
+  - Script tree, history, schedule and variable updates are only sent to administrators' browsers. They used to be broadcast to every logged-in user.
+- **Import preview:** import is now two steps. A dry run shows what will be updated or added, and warns about scripts that changed on the server since the export was made. Nothing is written until you confirm. One import at a time; limits lowered (10 MB zip, 2 MB per script, 20 MB total).
+- **Agent work folder locked down:** on Windows only SYSTEM and Administrators can read it (Program Files sub-folders are readable by all users by default). On Linux/macOS it is `chmod 700`, and the `/tmp` fallback uses a private `mktemp` directory. Cleanup only matches file names this plugin generates.
+- **Release downloads are pinned to their git tag** (`downloadUrl` → `archive/refs/tags/<version>.zip`), so an Upgrade installs exactly the tagged code instead of whatever is on `master`. `release.sh` sets the version and URL together.
 ### Changed
-- README: notes on how this fork was made and tested (NeDB covered by automated tests; MongoDB and non-Windows agents less so).
+- README: notes on how this fork was made and tested (NeDB covered by automated tests; MongoDB and non-Windows agents less so), and the permission model.
 
 ## [0.1.3] - 2026-11-18
 ### Added

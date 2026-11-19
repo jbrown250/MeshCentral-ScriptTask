@@ -12,9 +12,17 @@ Community fork of [ryanblenis/MeshCentral-ScriptTask](https://github.com/ryanble
 
 Use at your own risk. If you hit a problem, please open an issue and say whether you use MongoDB or NeDB and which agent OS.
 
+## Permissions
+- ScriptTask is for **full MeshCentral administrators** only. Other users don't see the tab, and the server rejects their requests.
+- Running or scheduling a script on a device also requires the **remote command** right on that device.
+- Devices (agents) can only fetch scripts for jobs queued for them and report results.
+
+## Releasing (maintainers)
+`sh release.sh 0.1.5` sets `version` and the tag-pinned `downloadUrl` in `config.json`, dates the `[Unreleased]` changelog entry, commits and tags. Then `git push origin master --tags` and use **Upgrade** in MeshCentral.
+
 ## Export / Import
 - **Export** (toolbar) downloads `scripttask-export-<date>.zip` with every script as a normal file, in folders matching the script tree. Characters Windows can't use in file names are replaced with `_`; the real names are kept in `scripttask-export.json`, so leave that file in the zip.
-- Edit, add or re-arrange files offline, then **Import** the zip. Matching scripts are updated, new files and folders are added, and nothing is deleted. Files that aren't `.ps1`, `.bat`, `.cmd` or `.sh` are skipped.
+- Edit, add or re-arrange files offline, then **Import** the zip. You get a preview first (including a warning for scripts changed on the server since the export). After you confirm, matching scripts are updated, new files and folders are added, and nothing is deleted. Files that aren't `.ps1`, `.bat`, `.cmd` or `.sh` are skipped.
 - A file renamed offline is imported as a new script (the old one stays), because it no longer matches by name.
 
 ## Important Note
