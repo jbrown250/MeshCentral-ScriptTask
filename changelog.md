@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
-## [Unreleased]
+## [0.1.6] - 2026-11-19
 ### Added
 - **Runners.** Users who aren't full administrators can run scripts on devices where they have MeshCentral's **remote command** right:
   - The ScriptTask tab appears only on those devices.
