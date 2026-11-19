@@ -281,6 +281,13 @@ module.exports.scripttask = function (parent) {
         });
     };
     
+    // A runner's history only includes devices they still have remote command rights on.
+    obj.runnerVisible = async function (user, jobs) {
+        var allowed = {};
+        for (const n of [...new Set(jobs.map(j => j.node))]) allowed[n] = await obj.canUserRunOn(user, null, n);
+        return jobs.filter(j => allowed[j.node]);
+    };
+
     // ids: { scriptId, nodeId, tree, variables, runById (the job's launcher), forUser (a runner asking for their view) }
     obj.updateFrontEnd = async function(ids){
         var users = (obj.meshServer.webserver && obj.meshServer.webserver.users) || {};
@@ -295,7 +302,7 @@ module.exports.scripttask = function (parent) {
                     send(obj.adminTargets(), { pluginaction: 'historyData', scriptId: ids.scriptId, nodeId: null, scriptHistory: sh, nodeHistory: null, scriptSchedule: ss });
                 }
                 for (const u of runnerIds) {
-                    var shu = await obj.db.getJobScriptHistory(ids.scriptId, u);
+                    var shu = await obj.runnerVisible(users[u], await obj.db.getJobScriptHistory(ids.scriptId, u));
                     send([u], { pluginaction: 'historyData', scriptId: ids.scriptId, nodeId: null, scriptHistory: shu, nodeHistory: null, scriptSchedule: [] });
                 }
             }
@@ -306,7 +313,7 @@ module.exports.scripttask = function (parent) {
                     send(obj.adminTargets(), { pluginaction: 'historyData', scriptId: null, nodeId: ids.nodeId, scriptHistory: null, nodeHistory: nh, nodeSchedule: ns });
                 }
                 for (const u of runnerIds) {
-                    var nhu = await obj.db.getJobNodeHistory(ids.nodeId, u);
+                    var nhu = (await obj.canUserRunOn(users[u], null, ids.nodeId)) ? await obj.db.getJobNodeHistory(ids.nodeId, u) : [];
                     send([u], { pluginaction: 'historyData', scriptId: null, nodeId: ids.nodeId, scriptHistory: null, nodeHistory: nhu, nodeSchedule: [] });
                 }
             }
@@ -369,14 +376,18 @@ module.exports.scripttask = function (parent) {
         var deny = () => res.sendStatus(401);
         if (req.query.export == 1 || req.query.schedule == 1 || req.query.admin == 1) return deny();
         if (req.query.dl != null || req.query.edit == 1) {
-            // view/download script content: allowed once they've opened ScriptTask on a device they can run on
-            if (!obj.isWatcher(user._id)) return deny();
-            if (req.query.dl != null) return obj.downloadFile(req, res, user);
-            if (req.query.id == null) return deny();
-            return obj.db.get(req.query.id).then(found => {
-                if (found.length == 0 || found[0].type != 'script') return res.sendStatus(404);
-                res.render(obj.VIEWS + 'scriptedit', obj.noCache({ scriptData: JSON.stringify(found[0]), readOnly: 'true' }));
-            }).catch(deny);
+            // view/download script content: rights on the device the page is open for are re-checked on every request
+            return obj.canUserRunOn(user, null, String(req.query.node || ''))
+            .then(ok => {
+                if (!ok) return deny();
+                if (req.query.dl != null) return obj.downloadFile(req, res, user);
+                if (req.query.id == null) return deny();
+                return obj.db.get(req.query.id).then(found => {
+                    if (found.length == 0 || found[0].type != 'script') return res.sendStatus(404);
+                    res.render(obj.VIEWS + 'scriptedit', obj.noCache({ scriptData: JSON.stringify(found[0]), readOnly: 'true' }));
+                });
+            })
+            .catch(deny);
         }
         obj.canUserRunOn(user, null, String(req.query.node || ''))
         .then(ok => {

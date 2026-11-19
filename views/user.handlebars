@@ -441,7 +441,7 @@ function goEdit() {
     var selScript = document.querySelectorAll('.liselected');
     if (selScript.length && (selScript[0].getAttribute('x-data-id') != selScript[0].getAttribute('x-data-folder'))) {
       var scriptId = selScript[0].getAttribute('x-data-id');
-      window.open('/pluginadmin.ashx?pin=scripttask&user=1&edit=1&id=' + scriptId, '_blank');
+      window.open('/pluginadmin.ashx?pin=scripttask&user=1&edit=1&id=' + encodeURIComponent(scriptId) + '&node=' + encodeURIComponent(parent.currentNode._id), '_blank');
       window.callback = function(sd) {
           parent.meshserver.send({ 'action': 'plugin', 'plugin': 'scripttask', 'pluginaction': 'editScript', 'scriptId': sd._id, 'scriptType': sd.type, 'scriptName': sd.name, 'scriptContent': sd.content, 'currentNodeId': parent.currentNode._id });
       };
@@ -505,7 +505,7 @@ function goDownload() {
   var sel = isSelected[0];
   var id = sel.getAttribute('x-data-id');
   if (id == sel.getAttribute('x-data-folder')) return;
-  window.location = '/pluginadmin.ashx?pin=scripttask&user=1&dl='+id;
+  window.location = '/pluginadmin.ashx?pin=scripttask&user=1&dl=' + encodeURIComponent(id) + '&node=' + encodeURIComponent(parent.currentNode._id);
 }
 function addScript(name, content, path) {
   // file type testing

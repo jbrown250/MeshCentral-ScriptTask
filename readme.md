@@ -21,7 +21,8 @@ Use at your own risk. If you hit a problem, please open an issue and say whether
 | Schedule; add, edit, rename, move, delete; import/export; variables | – | ✓ |
 
 - The ScriptTask tab only appears on devices where you have remote command rights (administrators see it everywhere).
-- Rights are checked when a job is queued **and** again when it is sent to the device.
+- Rights are checked when a job is queued **and** again when it is sent to the device. Viewing/downloading scripts and history are re-checked on every request, so removing remote command takes effect immediately.
+- Runners can read every script. Keep passwords and tokens out of scripts; anyone you give remote command on any device can see them.
 - Users with neither role don't see the tab, and the server rejects their requests.
 - Devices (agents) can only fetch scripts for jobs queued for them, and report results.
 
