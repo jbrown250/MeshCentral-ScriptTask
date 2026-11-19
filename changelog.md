@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Known Issues]
 - None. Please feel free to submit an issue via [GitHub](https://github.com/jbrown250/MeshCentral-ScriptTask) if you find anything.
 
-## [Unreleased]
+## [0.1.9] - 2026-11-19
 ### Changed
 - Download from `master` again (as upstream did); the `release` branch is no longer used. You only push `master` when a release is ready, so the extra branch added nothing. `release.sh` no longer touches it.
 
